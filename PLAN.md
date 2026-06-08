@@ -620,8 +620,10 @@ Salida en `artifacts/eval/<timestamp>/`:
 ### 12.1 Variables de entorno
 
 ```
-LM_STUDIO_BASE_URL=http://localhost:1234/v1
-LM_STUDIO_MODEL=gemma-4-e4b
+DISTILL_BACKEND=ollama                       # ollama | lmstudio | google
+OLLAMA_BASE_URL=http://localhost:11434/v1
+OLLAMA_MODEL=gemma4:e4b-it-qat               # think=False → JSON directo sin preámbulo
+GOOGLE_API_KEY=...                           # solo si DISTILL_BACKEND=google
 TORCH_DEVICE=mps
 DATA_DIR=./data
 ARTIFACTS_DIR=./artifacts
@@ -639,11 +641,17 @@ triager-omega/
 │   └── Bug_Report_Comments_curado.parquet
 ├── artifacts/                         # outputs generados
 │   ├── active_candidates.json
-│   ├── label_encoder.json
-│   ├── distillations.parquet
-│   ├── cbr_model/
-│   ├── ibr_faiss.index
-│   ├── ibr_bug_ids.npy
+│   ├── label_encoder.json             # 450 devs (Módulo 1)
+│   ├── splits.parquet                 # 450 devs, 64k bugs
+│   ├── sample_weights_train.npy
+│   ├── repo_interactions.parquet      # commit/review (gecko-dev) — IBR
+│   ├── discussion_interactions.parquet# discussion limpio (sin bots, dedup) — IBR
+│   ├── pilot/                         # FASE CBR (piloto top-20 devs)
+│   │   ├── splits.parquet             #   subset piloto
+│   │   ├── label_encoder.json         #   20 devs
+│   │   ├── distillations.parquet      #   ETAPA 1: salida de la destilación (Bug Id, distilled_text)
+│   │   └── cbr_model/                 #   ETAPA 3: DeBERTa entrenado (pesos + tokenizer + metrics.json)
+│   ├── balance_experiment/            # resultados ablación cola larga
 │   └── eval/
 ├── src/
 │   └── triager_omega/
@@ -652,22 +660,23 @@ triager-omega/
 │       ├── data/
 │       │   ├── __init__.py
 │       │   ├── loader.py
-│       │   └── preprocessor.py
-│       ├── modules/
+│       │   ├── preprocessor.py
+│       │   └── repo_miner.py
+│       ├── cbr/                       # FASE CBR (Módulos 2-3)
 │       │   ├── __init__.py
-│       │   ├── distillation.py
-│       │   ├── cbr.py
-│       │   ├── ibr.py
-│       │   └── aggregator.py
-│       ├── training/
-│       │   ├── __init__.py
-│       │   ├── train_cbr.py
-│       │   └── evaluate.py
-│       └── pipeline.py
+│       │   ├── pilot.py               #   selecciona el subset piloto → artifacts/pilot/
+│       │   ├── distillation.py        #   ETAPA 1: cliente backend-agnóstico (ollama/lmstudio/google) + prompt + cache
+│       │   └── train.py               #   ETAPA 2-3: DeBERTa sobre crudo+destilado → guarda cbr_model/
+│       ├── modules/                   # (pendiente) ibr.py, aggregator.py
+│       └── pipeline.py                # (pendiente) orquestador end-to-end
 ├── scripts/
-│   ├── eda.py                         # estadísticas del dataset (distribución Assigned To, longitudes, cobertura)
-│   ├── distillation_samples.py        # inspeccionar 50 destilaciones de muestra
-│   └── error_analysis.py              # análisis de fallos post-evaluación
+│   ├── eda.py                         # estadísticas del dataset
+│   ├── run_distillation.py           # corre la ETAPA 1 (batch reanudable, --smoke N)
+│   ├── train_cbr_quick.py            # entrenamiento exploratorio (referencia para cbr/train.py)
+│   ├── balance_experiment.py         # ablación de 5 estrategias de cola larga (§11.3)
+│   ├── build_discussion_interactions.py  # limpia comments → discussion_interactions.parquet
+│   ├── inspect_bug.py                # audita la relación bug ↔ 3 fuentes del IBR
+│   └── test_{api,ollama}.py          # pruebas de conexión a los backends LLM
 ├── tests/
 ├── pyproject.toml
 ├── CLAUDE.md
@@ -683,13 +692,14 @@ triager-omega/
 | `data/loader.py` | funciones `load_bugs()`, `load_contributors()`, `load_comments()` |
 | `data/preprocessor.py` | directorio de candidatos, splits temporales, sample weights |
 | `data/repo_miner.py` | minería de gecko-dev (`git log`) → `repo_interactions.parquet`; parsea `Bug <id>` y `r=`/`a=`; puente de identidad a `Contributor Id` |
-| `modules/distillation.py` | cliente OpenAI hacia LM Studio, prompt builder, cache |
-| `modules/cbr.py` | dataset, modelo DeBERTa, predict() → NPS |
-| `modules/ibr.py` | index FAISS, retrieval Top-k, Interaction Table (Bugzilla+MSR), scoring `s·IP·decay` → NIS |
-| `modules/aggregator.py` | fusión `FS=NPS+W_f·NIS` y filtro de candidatos |
-| `training/train_cbr.py` | loop de fine-tuning |
-| `training/evaluate.py` | Hit@K, MRR, breakdown |
-| `pipeline.py` | clase `TriagerPipeline` orquestadora |
+| `cbr/pilot.py` | selecciona el subset piloto (top-20 devs, cap 300/100) → `artifacts/pilot/` |
+| `cbr/distillation.py` | **ETAPA 1**: cliente backend-agnóstico (ollama/lmstudio/google), prompt+few-shot, validación+fallback, `to_distilled_text` `[FL][SY][CP]` |
+| `cbr/train.py` | **ETAPA 2-3**: DeBERTa sobre texto crudo+destilado (dos vistas), sampler ponderado, `adam_eps=1e-4` (MPS), Hit@K/MRR → guarda `cbr_model/` |
+| `modules/ibr.py` *(pendiente)* | index FAISS, retrieval Top-k, Interaction Table (Bugzilla+MSR), scoring `s·IP·decay` → NIS |
+| `modules/aggregator.py` *(pendiente)* | fusión `FS=NPS+W_f·NIS` y filtro de candidatos |
+| `pipeline.py` *(pendiente)* | clase `TriagerPipeline` orquestadora |
+
+**Flujo de archivos de la fase CBR:** `distillation` → `artifacts/pilot/distillations.parquet` → `train` (lee el parquet + une crudo) → `artifacts/pilot/cbr_model/`. La destilación se corre **una vez**; el entrenamiento puede repetirse leyendo el parquet sin volver a llamar al LLM.
 
 ---
 
@@ -710,22 +720,25 @@ triager-omega/
 
 ### Fase 2 — Módulos individuales (semanas 2-4)
 
-**Semana 2 — Módulo 2 (Destilación)**
-- [ ] Cliente LM Studio con `openai`.
-- [ ] Builder de prompt con 4 few-shot.
-- [ ] Validación JSON + fallback.
-- [ ] Caché en parquet.
-- [ ] Script `scripts/distillation_samples.py`: imprimir 50 destilaciones de muestra a consola para revisión manual.
-- [ ] Lanzar destilación batch completa (overnight x N días).
+> **NOTA — Estrategia piloto.** La fase CBR se implementa primero como **piloto a escala TriagerX** (top-20 devs, cap 300/dev; `cbr/pilot.py` → `artifacts/pilot/`) para validar el diseño completo antes de correr sobre los 450 devs / 64k bugs. Decisión y dimensionamiento: ver [[cbr-pilot-destilacion]].
 
-**Semana 3 — Módulo 3 (CBR / DeBERTa)**
-- [ ] Dataset PyTorch sobre destilados.
-- [ ] Modelo DeBERTa con cabeza lineal.
-- [ ] Loop de entrenamiento con `WeightedRandomSampler`.
-- [ ] Checkpointing por epoch + early stopping en Hit@5 val.
-- [ ] Inferencia batched.
+**Semana 2 — Módulo 2 (Destilación)** — *implementado en `src/triager_omega/cbr/distillation.py`*
+- [x] Cliente **backend-agnóstico** (`ollama` default / `lmstudio` / `google`) con `openai`/`genai`.
+- [x] Builder de prompt con few-shot (reusa `scripts/test_api.py`/`test_ollama.py`); `think=False` en Ollama → JSON directo.
+- [x] Validación JSON + fallback determinista.
+- [x] Caché en parquet idempotente y reanudable (`scripts/run_distillation.py`, `--smoke N`).
+- [x] `cbr/pilot.py`: subset piloto (9.364 bugs). Smoke test OK (calidad de `capabilities` validada).
+- [ ] Lanzar destilación batch del piloto con Ollama → `artifacts/pilot/distillations.parquet` (~4 h).
+
+**Semana 3 — Módulo 3 (CBR / DeBERTa)** — *implementado en `src/triager_omega/cbr/train.py`*
+- [x] Dataset PyTorch sobre texto crudo+destilado (dos vistas §5.8).
+- [x] Modelo DeBERTa con cabeza lineal (base `train_cbr_quick.py`; `adam_eps=1e-4` para MPS).
+- [x] Loop de entrenamiento con `WeightedRandomSampler` + métricas Hit@K/MRR.
+- [x] Guardado del modelo entrenado → `artifacts/pilot/cbr_model/` (pesos + tokenizer + `metrics.json`).
+- [ ] Correr el entrenamiento (tras el batch de destilación) y leer métricas.
+- [ ] Inferencia batched (`predict()` → NPS) para el agregador.
 - [x] **Experimento de balanceo de cola larga (§11.3):** `scripts/balance_experiment.py` — 5 variantes con mismo seed+split, Hit@K/MRR segmentados por bucket. *(Surrogate v1: clasificador TF-IDF+lineal y multi-vista por EDA, hasta tener DeBERTa+destilación. Hallazgo: el Hit@5 global es plano (~0.74) entre todas → enmascara la cola; segmentado, `combined` casi cuadruplica el Hit@10 de la cola (0.055→0.242) a costa de ~5pp en la cabeza.)* Pendiente: re-correr con backend DeBERTa (Módulo 3) y vistas LLM reales (Módulo 2).
-- [ ] **Experimento de input CBR (§11.2.4):** entrenar crudo-solo vs destilado-solo vs crudo+destilado y comparar.
+- [ ] **Experimento de input CBR (§11.2.4):** entrenar crudo-solo vs destilado-solo vs crudo+destilado y comparar. *Ya soportado:* `cbr/train.py --text-mode {raw,distilled,both}`.
 
 **Semana 4 — Módulo 4 (IBR / SBERT + interacciones tipadas)**
 - [x] `data/repo_miner.py`: minería gecko-dev → `repo_interactions.parquet` (commit/review) con puente de identidad. *(ya implementado)*

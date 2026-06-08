@@ -39,7 +39,7 @@ def load_first_comments(bug_ids: set[int]) -> dict[int, str]:
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--smoke", type=int, default=0, help="solo N bugs, imprime resultados")
-    p.add_argument("--backend", choices=["lmstudio", "google"], default=None)
+    p.add_argument("--backend", choices=["ollama", "lmstudio", "google"], default=None)
     p.add_argument("--flush-every", type=int, default=50, help="guardar cache cada N bugs")
     args = p.parse_args()
     if args.backend:

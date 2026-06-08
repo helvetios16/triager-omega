@@ -34,14 +34,17 @@ class Settings(BaseSettings):
     comments_file: str = "bug_comments.parquet"
 
     # --- Módulo 2: Destilación (backend-agnóstico) ---
-    # backend: "lmstudio" (local, sin límite, plan para el batch completo) o
-    #          "google"   (API Google AI, rápido para probar; ojo rate limits).
-    distill_backend: str = "lmstudio"
+    # backend: "ollama"   (local, óptimo, plan para el batch completo) ·
+    #          "lmstudio" (local, OpenAI-compat) · "google" (API, ojo rate limits).
+    distill_backend: str = "ollama"
+    ollama_base_url: str = "http://localhost:11434/v1"
+    ollama_model: str = "gemma4:e4b-it-qat"  # modelo en Ollama (ver scripts/test_ollama.py)
+    ollama_think: bool = False               # desactiva el "thinking" → JSON directo, sin preámbulo
     lm_studio_base_url: str = "http://127.0.0.1:1234/v1"
     lm_studio_model: str = "google/gemma-4-e4b"
     google_model: str = "gemma-4-26b-a4b-it"  # modelo Gemma vía google.genai (ver test_api.py)
     distill_max_comment_chars: int = 1500      # truncado del primer comentario en la entrada
-    distill_max_tokens: int = 2048             # gemma-4-26b genera preámbulo largo; <2048 trunca el JSON
+    distill_max_tokens: int = 2048             # holgado; con think=False Gemma no genera preámbulo
     torch_device: str = "mps"
 
     # --- Piloto del CBR (subconjunto escala TriagerX para validar el diseño) ---

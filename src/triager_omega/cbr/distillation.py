@@ -147,6 +147,40 @@ class _GoogleBackend:
         return (resp.text or "").strip()
 
 
+def _chat_messages(user_input: str) -> list[dict]:
+    """system + few-shot (user/assistant) + entrada. Para backends OpenAI-compatibles
+    que sí soportan rol system (Ollama, LM Studio)."""
+    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+    for ex in FEW_SHOT_EXAMPLES:
+        messages.append({"role": "user", "content": ex["input"]})
+        messages.append({"role": "assistant", "content": ex["output"]})
+    messages.append({"role": "user", "content": user_input})
+    return messages
+
+
+class _OllamaBackend:
+    """Gemma servido por Ollama (API OpenAI-compatible). `think=False` desactiva el
+    razonamiento → el modelo emite el JSON directo, sin preámbulo (ver test_ollama.py)."""
+
+    def __init__(self, cfg: Settings):
+        from openai import OpenAI
+
+        self.client = OpenAI(base_url=cfg.ollama_base_url, api_key="ollama")
+        self.model = cfg.ollama_model
+        self.max_tokens = cfg.distill_max_tokens
+        self.think = cfg.ollama_think
+
+    def complete(self, user_input: str) -> str:
+        resp = self.client.chat.completions.create(
+            model=self.model,
+            messages=_chat_messages(user_input),
+            temperature=0.0,
+            max_tokens=self.max_tokens,
+            extra_body={"think": self.think},
+        )
+        return (resp.choices[0].message.content or "").strip()
+
+
 class _LMStudioBackend:
     """Gemma local servido por LM Studio (API OpenAI-compatible)."""
 
@@ -158,22 +192,17 @@ class _LMStudioBackend:
         self.max_tokens = cfg.distill_max_tokens
 
     def complete(self, user_input: str) -> str:
-        # Few-shot con roles user/assistant; system plegado en el primer user (uniforme con Gemma).
-        messages = [{"role": "user", "content": SYSTEM_PROMPT + "\n\n" + FEW_SHOT_EXAMPLES[0]["input"]},
-                    {"role": "assistant", "content": FEW_SHOT_EXAMPLES[0]["output"]}]
-        for ex in FEW_SHOT_EXAMPLES[1:]:
-            messages.append({"role": "user", "content": ex["input"]})
-            messages.append({"role": "assistant", "content": ex["output"]})
-        messages.append({"role": "user", "content": user_input})
-
         resp = self.client.chat.completions.create(
-            model=self.model, messages=messages, temperature=0.0, max_tokens=self.max_tokens,
+            model=self.model, messages=_chat_messages(user_input),
+            temperature=0.0, max_tokens=self.max_tokens,
         )
         return (resp.choices[0].message.content or "").strip()
 
 
 def make_client(cfg: Settings = settings):
     """Instancia el backend según config.distill_backend."""
+    if cfg.distill_backend == "ollama":
+        return _OllamaBackend(cfg)
     if cfg.distill_backend == "google":
         return _GoogleBackend(cfg)
     if cfg.distill_backend == "lmstudio":
