@@ -23,17 +23,17 @@ from triager_omega.config import settings
 from triager_omega.data import loader
 
 
-def load_first_comments(bug_ids: set[int]) -> dict[int, str]:
-    """Primer comentario (preferentemente el reporte inicial) por bug."""
-    bc = pd.read_parquet(
-        settings.comments_path, columns=["Bug Id", "Time", "Bug Report", "Text"]
-    )
-    bc = bc[bc["Bug Id"].isin(bug_ids)].dropna(subset=["Text"]).drop_duplicates()
-    bc["Time"] = pd.to_datetime(bc["Time"], utc=True, errors="coerce")
-    # prioriza Bug Report==True; dentro de eso, el más antiguo.
-    bc = bc.sort_values(["Bug Report", "Time"], ascending=[False, True])
-    first = bc.groupby("Bug Id").first()
-    return first["Text"].to_dict()
+# def load_first_comments(bug_ids: set[int]) -> dict[int, str]:
+#     """Primer comentario (preferentemente el reporte inicial) por bug."""
+#     bc = pd.read_parquet(
+#         settings.comments_path, columns=["Bug Id", "Time", "Bug Report", "Text"]
+#     )
+#     bc = bc[bc["Bug Id"].isin(bug_ids)].dropna(subset=["Text"]).drop_duplicates()
+#     bc["Time"] = pd.to_datetime(bc["Time"], utc=True, errors="coerce")
+#     # prioriza Bug Report==True; dentro de eso, el más antiguo.
+#     bc = bc.sort_values(["Bug Report", "Time"], ascending=[False, True])
+#     first = bc.groupby("Bug Id").first()
+#     return first["Text"].to_dict()
 
 
 def main() -> None:
@@ -56,8 +56,9 @@ def main() -> None:
     # bug_metadata trae filas duplicadas por Bug Id → deduplicar antes de indexar.
     bugs = bugs[bugs["Bug Id"].isin(bug_ids)].drop_duplicates(subset="Bug Id").set_index("Bug Id")
 
-    logger.info("Cargando primeros comentarios de {} bugs...", len(bug_ids))
-    comments = load_first_comments(bug_ids)
+    # logger.info("Cargando primeros comentarios de {} bugs...", len(bug_ids))
+    # comments = load_first_comments(bug_ids)
+    comments: dict[int, str] = {}
 
     # cache existente (reanudable).
     done: dict[int, dict] = {}
