@@ -43,6 +43,9 @@ class Settings(BaseSettings):
     lm_studio_base_url: str = "http://127.0.0.1:1234/v1"
     lm_studio_model: str = "google/gemma-4-e4b"
     google_model: str = "gemma-4-26b-a4b-it"  # modelo Gemma vía google.genai (ver test_api.py)
+    grok_api_key: str = ""
+    grok_base_url: str = "https://api.x.ai/v1"
+    grok_model: str = "grok-3-mini"
     distill_max_comment_chars: int = 1500      # truncado del primer comentario en la entrada
     distill_max_tokens: int = 2048             # holgado; con think=False Gemma no genera preámbulo
     torch_device: str = "mps"

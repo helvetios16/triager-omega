@@ -199,6 +199,30 @@ class _LMStudioBackend:
         return (resp.choices[0].message.content or "").strip()
 
 
+class _GrokBackend:
+    """grok-3-mini vía API xAI (OpenAI-compatible). Lee GROK_API_KEY del .env."""
+
+    def __init__(self, cfg: Settings):
+        from openai import OpenAI
+        from dotenv import load_dotenv
+        import os
+
+        load_dotenv()
+        api_key = cfg.grok_api_key or os.environ.get("GROK_API_KEY", "")
+        if not api_key:
+            raise ValueError("GROK_API_KEY no encontrada en .env ni en config")
+        self.client = OpenAI(base_url=cfg.grok_base_url, api_key=api_key)
+        self.model = cfg.grok_model
+        self.max_tokens = cfg.distill_max_tokens
+
+    def complete(self, user_input: str) -> str:
+        resp = self.client.chat.completions.create(
+            model=self.model, messages=_chat_messages(user_input),
+            temperature=0.0, max_tokens=self.max_tokens,
+        )
+        return (resp.choices[0].message.content or "").strip()
+
+
 def make_client(cfg: Settings = settings):
     """Instancia el backend según config.distill_backend."""
     if cfg.distill_backend == "ollama":
@@ -207,6 +231,8 @@ def make_client(cfg: Settings = settings):
         return _GoogleBackend(cfg)
     if cfg.distill_backend == "lmstudio":
         return _LMStudioBackend(cfg)
+    if cfg.distill_backend == "grok":
+        return _GrokBackend(cfg)
     raise ValueError(f"distill_backend desconocido: {cfg.distill_backend}")
 
 

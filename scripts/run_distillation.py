@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import time
 
 import pandas as pd
 from loguru import logger
@@ -39,7 +40,7 @@ from triager_omega.data import loader
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--smoke", type=int, default=0, help="solo N bugs, imprime resultados")
-    p.add_argument("--backend", choices=["ollama", "lmstudio", "google"], default=None)
+    p.add_argument("--backend", choices=["ollama", "lmstudio", "google", "grok"], default=None)
     p.add_argument("--flush-every", type=int, default=50, help="guardar cache cada N bugs")
     args = p.parse_args()
     if args.backend:
@@ -75,6 +76,7 @@ def main() -> None:
     client = D.make_client()
     rows = list(done.values())
     n_fallback = 0
+    t_batch = time.monotonic()
 
     for i, bug_id in enumerate(todo, 1):
         bug = bugs.loc[bug_id]
@@ -96,7 +98,13 @@ def main() -> None:
             print("DESTILADO:", text)
         if not args.smoke and (i % args.flush_every == 0 or i == len(todo)):
             pd.DataFrame(rows).to_parquet(settings.distillations_path, index=False)
-            logger.info("  {}/{} destilados (fallbacks: {})", i, len(todo), n_fallback)
+            elapsed = time.monotonic() - t_batch
+            rate = args.flush_every / elapsed if elapsed > 0 else float("inf")
+            logger.info(
+                "  {}/{} destilados (fallbacks: {}) | lote: {:.1f}s ({:.1f} bugs/s)",
+                i, len(todo), n_fallback, elapsed, rate,
+            )
+            t_batch = time.monotonic()
 
     if not args.smoke:
         pd.DataFrame(rows).to_parquet(settings.distillations_path, index=False)
