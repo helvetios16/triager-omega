@@ -1,0 +1,30 @@
+[project]
+name = "triager-omega"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "accelerate>=1.13.0",
+    "google-genai>=1.0.0",
+    "loguru>=0.7.3",
+    "numpy>=2.4.6",
+    "openai>=1.0.0",
+    "pandas>=3.0.3",
+    "protobuf>=7.35.0",
+    "pyarrow>=24.0.0",
+    "pydantic-settings>=2.14.1",
+    "python-dotenv>=1.0.0",
+    "scikit-learn>=1.9.0",
+    "sentencepiece>=0.2.1",
+    "tiktoken>=0.13.0",
+    "torch>=2.12.0",
+    "transformers>=5.9.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/triager_omega"]

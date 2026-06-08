@@ -1,0 +1,24 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# Secrets
+.env
+
+# Project artifacts and data
+artifacts/
+data/
+*.parquet
+
+# macOS
+.DS_Store
+
+# Repos minados (MSR) — no versionar
+.repos/
