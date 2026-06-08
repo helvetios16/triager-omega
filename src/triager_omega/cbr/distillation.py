@@ -200,7 +200,7 @@ class _LMStudioBackend:
 
 
 class _GrokBackend:
-    """grok-3-mini vía API xAI (OpenAI-compatible). Lee GROK_API_KEY del .env."""
+    """Grok vía API xAI (OpenAI-compatible). Modelo en cfg.grok_model. Lee GROK_API_KEY del .env."""
 
     def __init__(self, cfg: Settings):
         from openai import OpenAI

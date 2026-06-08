@@ -45,7 +45,10 @@ class Settings(BaseSettings):
     google_model: str = "gemma-4-26b-a4b-it"  # modelo Gemma vía google.genai (ver test_api.py)
     grok_api_key: str = ""
     grok_base_url: str = "https://api.x.ai/v1"
-    grok_model: str = "grok-3-mini"
+    # non-reasoning: la destilación es transformación determinista (temp=0) → no
+    # necesita razonamiento; el variante non-reasoning es ~2-4× más barato y rápido.
+    # ("grok-3-mini" era un alias legacy que xAI redirige silenciosamente a grok-4.3.)
+    grok_model: str = "grok-4.20-0309-non-reasoning"
     distill_max_comment_chars: int = 1500      # truncado del primer comentario en la entrada
     distill_max_tokens: int = 2048             # holgado; con think=False Gemma no genera preámbulo
     torch_device: str = "mps"
