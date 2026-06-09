@@ -15,6 +15,7 @@ Flujo de archivos:  distillations.parquet ─► [este módulo] ─► cbr_model
 Ejecutar (tras correr la destilación):
     uv run python -m triager_omega.cbr.train
     uv run python -m triager_omega.cbr.train --text-mode raw   # ablación §11.2.4
+    uv run python -m triager_omega.cbr.train --eval-only       # solo val/test, sin reentrenar
 """
 
 from __future__ import annotations
@@ -150,20 +151,37 @@ def run(args: argparse.Namespace) -> dict:
 
     train_df = df[df["split"] == "train"]
     val_df = df[df["split"] == "val"]
-    logger.info("train={} val={} test={}", len(train_df), len(val_df), (df["split"] == "test").sum())
+    test_df = df[df["split"] == "test"]
+    logger.info("train={} val={} test={}", len(train_df), len(val_df), len(test_df))
 
-    tokenizer = AutoTokenizer.from_pretrained(args.model)
-    model = AutoModelForSequenceClassification.from_pretrained(args.model, num_labels=num_labels)
+    # carpeta por modo (ablación §11.2.4): cbr_model_both / _raw / _distilled.
+    out_dir = settings.pilot_dir / f"cbr_model_{args.text_mode}"
+
+    # --eval-only: carga los pesos ya afinados desde out_dir (no el base de HF)
+    # y se salta el entrenamiento; sirve para sacar val/test sin reentrenar.
+    if args.eval_only:
+        if not out_dir.exists():
+            raise FileNotFoundError(
+                f"--eval-only pero no existe el modelo entrenado en {out_dir}. "
+                "Corre primero sin --eval-only para generarlo."
+            )
+        model_src = str(out_dir)
+        logger.info("eval-only: cargando modelo afinado desde {}", out_dir)
+    else:
+        model_src = args.model
+
+    tokenizer = AutoTokenizer.from_pretrained(model_src)
+    model = AutoModelForSequenceClassification.from_pretrained(model_src, num_labels=num_labels)
 
     train_ds = BugDataset(train_df["text"].tolist(), train_df["label"].tolist(), tokenizer, args.max_length)
     val_ds = BugDataset(val_df["text"].tolist(), val_df["label"].tolist(), tokenizer, args.max_length)
+    test_ds = BugDataset(test_df["text"].tolist(), test_df["label"].tolist(), tokenizer, args.max_length)
 
     sample_weights = None
     if not args.no_weighted:
         freq = train_df["label"].value_counts()
         sample_weights = (1.0 / train_df["label"].map(freq)).to_numpy(dtype=np.float64)
 
-    out_dir = settings.pilot_dir / "cbr_model"
     training_args = TrainingArguments(
         output_dir=str(settings.pilot_dir / "cbr_trainer"),
         num_train_epochs=args.epochs,
@@ -186,23 +204,43 @@ def run(args: argparse.Namespace) -> dict:
         compute_metrics=make_compute_metrics(), sample_weights=sample_weights,
     )
 
-    logger.info("== Entrenando ==")
-    trainer.train()
+    if args.eval_only:
+        logger.info("== eval-only: se omite el entrenamiento ==")
+    else:
+        logger.info("== Entrenando ==")
+        trainer.train()
 
     logger.info("== Evaluación final en val ==")
     metrics = {k: v for k, v in trainer.evaluate().items() if k.startswith("eval_")}
     for k, v in metrics.items():
         logger.info("  {} = {:.4f}", k, v)
 
+    # Evaluación sobre el conjunto de TEST (número de reporte, no usado en training).
+    logger.info("== Evaluación final en test ==")
+    test_metrics = {
+        k: v
+        for k, v in trainer.evaluate(test_ds, metric_key_prefix="test").items()
+        if k.startswith("test_")
+    }
+    for k, v in test_metrics.items():
+        logger.info("  {} = {:.4f}", k, v)
+    metrics.update(test_metrics)
+
     # --- Guardar el modelo entrenado (etapa 3 del flujo) ---
+    # En eval-only no se re-guardan los pesos (ya existen); solo se actualizan
+    # las métricas para no pisar el modelo con una copia idéntica.
     out_dir.mkdir(parents=True, exist_ok=True)
-    model.save_pretrained(out_dir)
-    tokenizer.save_pretrained(out_dir)
+    if not args.eval_only:
+        model.save_pretrained(out_dir)
+        tokenizer.save_pretrained(out_dir)
     (out_dir / "metrics.json").write_text(
         json.dumps({"text_mode": args.text_mode, "num_labels": num_labels, **metrics}, indent=2),
         encoding="utf-8",
     )
-    logger.success("Modelo CBR guardado en {}", out_dir)
+    if args.eval_only:
+        logger.success("Métricas actualizadas en {}", out_dir / "metrics.json")
+    else:
+        logger.success("Modelo CBR guardado en {}", out_dir)
     return metrics
 
 
@@ -216,6 +254,8 @@ def main() -> None:
     p.add_argument("--lr", type=float, default=2e-5)
     p.add_argument("--max-length", type=int, default=256)
     p.add_argument("--no-weighted", action="store_true", help="desactiva el sampler ponderado")
+    p.add_argument("--eval-only", action="store_true",
+                   help="carga el modelo afinado de cbr_model_<modo> y solo evalúa val/test (sin reentrenar)")
     p.add_argument("--cpu", action="store_true", help="fuerza CPU")
     # Mismo ajuste que train_cbr_quick: eps de AdamW alto para el nan en MPS.
     p.add_argument("--adam-eps", type=float, default=1e-4,
