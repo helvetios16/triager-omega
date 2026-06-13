@@ -363,8 +363,12 @@ El IBR consume una tabla larga `(bug_id, Contributor Id, kind, timestamp)` const
 ### 7.4 Índice de bugs históricos
 
 - Embeber el texto destilado (Módulo 2) de **cada bug del split de entrenamiento**.
-- Indexar con FAISS (`IndexFlatIP` sobre vectores L2-normalizados ≡ coseno).
-- Persistir en `artifacts/ibr_faiss.index` + `artifacts/ibr_bug_ids.npy`.
+- **Similitud brute-force** con `sentence_transformers.util.cos_sim` sobre la matriz
+  de embeddings L2-normalizados (≡ coseno) — **exactamente como TriagerX**, que NO
+  usa FAISS (`_get_top_k_similar_issues`). Para el piloto (~6k bugs) y el dataset
+  completo (~64k) es de sobra rápido; FAISS queda como optimización opcional futura.
+- Persistir en `artifacts/pilot/ibr_embeddings.npy` + `artifacts/pilot/ibr_bug_ids.npy`.
+- *Implementado en `src/triager_omega/modules/ibr.py` (`InteractionRecommender`).*
 
 ### 7.5 Recuperación
 
@@ -542,7 +546,7 @@ mozilla::SessionStore::Restore. Stacktrace shows ...
 | 4 | IP contribution commit+review (`ip_contribution`) | 1.5 | [0, 2] paso 0.1 |
 | 4 | IP assignment (`ip_assignment`) | 0.5 | [0, 2] paso 0.1 |
 | 4 | IP discussion (`ip_discussion`) | 0.1 | [0, 2] paso 0.1 |
-| 5 | `W_f` (peso del IBR en `FS=NPS+W_f·NIS`) | 0.7 | (0, 1) paso 0.1 (TriagerX) |
+| 5 | `W_f` (peso del IBR en `FS=NPS+W_f·NIS`) | 0.1 (Mozilla; TriagerX/OpenJ9: 0.7) | (0, 1) paso 0.1 |
 | 5 | K (Top-K operativo) | 5 | {1, 3, 5, 10} eval |
 
 ### 10.2 Estrategia de tuning
@@ -695,8 +699,9 @@ triager-omega/
 | `cbr/pilot.py` | selecciona el subset piloto (top-20 devs, cap 300/100) → `artifacts/pilot/` |
 | `cbr/distillation.py` | **ETAPA 1**: cliente backend-agnóstico (ollama/lmstudio/google), prompt+few-shot, validación+fallback, `to_distilled_text` `[FL][SY][CP]` |
 | `cbr/train.py` | **ETAPA 2-3**: DeBERTa sobre texto crudo+destilado (dos vistas), sampler ponderado, `adam_eps=1e-4` (MPS), Hit@K/MRR → guarda `cbr_model/` |
-| `modules/ibr.py` *(pendiente)* | index FAISS, retrieval Top-k, Interaction Table (Bugzilla+MSR), scoring `s·IP·decay` → NIS |
-| `modules/aggregator.py` *(pendiente)* | fusión `FS=NPS+W_f·NIS` y filtro de candidatos |
+| `modules/ibr.py` | `InteractionRecommender`: embeddings SBERT + cos_sim brute-force, retrieval Top-k/τ, Interaction Table en memoria (Bugzilla+MSR), scoring `s·IP·decay` → NIS, anti-fuga `t<t_now`. CLI `build`/`eval`. Réplica de `triagerx/system/triagerx.py`. |
+| `modules/aggregator.py` | `TriagerAggregator`: fusión aditiva `FS=NPS+W_f·NIS` (Ec. 8) alineada por class_idx, grid search de `W_f` en val, métricas del sistema completo + CBR-solo/IBR-solo. Réplica de `_adjust_dev_scores_by_similarity`/`_aggregate_rankings`. CLI `eval`/`--grid`. |
+| `cbr/predict.py` | `CbrPredictor`: carga el DeBERTa afinado → matriz de logits/NPS por class_idx. NPS min-max por fila (= `_normalize_tensor` de TriagerX) o softmax. |
 | `pipeline.py` *(pendiente)* | clase `TriagerPipeline` orquestadora |
 
 **Flujo de archivos de la fase CBR:** `distillation` → `artifacts/pilot/distillations.parquet` → `train` (lee el parquet + une crudo) → `artifacts/pilot/cbr_model/`. La destilación se corre **una vez**; el entrenamiento puede repetirse leyendo el parquet sin volver a llamar al LLM.
@@ -740,21 +745,33 @@ triager-omega/
 - [x] **Experimento de balanceo de cola larga (§11.3):** `scripts/balance_experiment.py` — 5 variantes con mismo seed+split, Hit@K/MRR segmentados por bucket. *(Surrogate v1: clasificador TF-IDF+lineal y multi-vista por EDA, hasta tener DeBERTa+destilación. Hallazgo: el Hit@5 global es plano (~0.74) entre todas → enmascara la cola; segmentado, `combined` casi cuadruplica el Hit@10 de la cola (0.055→0.242) a costa de ~5pp en la cabeza.)* Pendiente: re-correr con backend DeBERTa (Módulo 3) y vistas LLM reales (Módulo 2).
 - [ ] **Experimento de input CBR (§11.2.4):** entrenar crudo-solo vs destilado-solo vs crudo+destilado y comparar. *Ya soportado:* `cbr/train.py --text-mode {raw,distilled,both}`.
 
-**Semana 4 — Módulo 4 (IBR / SBERT + interacciones tipadas)**
+**Semana 4 — Módulo 4 (IBR / SBERT + interacciones tipadas)** — *implementado en `src/triager_omega/modules/ibr.py`*
 - [x] `data/repo_miner.py`: minería gecko-dev → `repo_interactions.parquet` (commit/review) con puente de identidad. *(ya implementado)*
-- [ ] Construir la **Interaction Table** unificada: unir Bugzilla (`assignment` vía `Assigned To`, `discussion` vía `bug_comments`) + MSR (`commit`/`review`).
+- [x] Construir la **Interaction Table** unificada: unir Bugzilla (`assignment` vía `Assigned To`, `discussion` vía `bug_comments`) + MSR (`commit`/`review`). *(en memoria, `_build_interaction_table`; concat de 3 fuentes indexada por bug_id)*
   - [x] Señal `discussion`: `scripts/build_discussion_interactions.py` → `discussion_interactions.parquet` (145.798 interacciones; filtra bots por dominio y dedup del 58% de filas repetidas).
-  - [ ] Señal `assignment` desde `Assigned To` (+ history si se quiere timestamp del cambio).
-  - [ ] Concat de las 3 fuentes → `interaction_table.parquet`.
-- [ ] Embeddings batch del corpus train (SBERT mpnet) + índice FAISS.
-- [ ] Función de retrieval Top-k con umbral τ.
-- [ ] Scoring `IS += s_j·IP[kind]·exp(−λΔt)` + normalización NIS (min-max).
+  - [x] Señal `assignment` desde `Assigned To` (fechada en `creation_time` del bug).
+  - [x] Concat de las 3 fuentes en memoria al fit (no se materializa parquet aparte).
+- [x] Embeddings batch del corpus train (SBERT mpnet) + índice (brute-force cos_sim, como TriagerX). `ibr build`.
+- [x] Función de retrieval Top-k con umbral τ (`_score`, réplica de `_get_top_k_similar_issues`).
+- [x] Scoring `IS += s_j·IP[kind]·exp(−λΔt)` + normalización NIS (min-max, `_normalize_nis`).
+- [x] **Baseline IBR-solo** (`ibr eval`): piloto test Hit@1=0.63, Hit@5=0.92, Hit@10=0.95, MRR=0.76, cobertura(NIS>0 del dev real)=0.92.
 - [ ] Tests: λ=0 vs λ=0.01; ablation solo-`discussion` vs todos los tipos; anti-fuga temporal (`t<t_now`).
 - [ ] **Ablación `assignment` on/off (§11.3):** correr el IBR con `ip_assignment=0.5` (valor TriagerX) vs `ip_assignment=0`, mismos splits/seed, y comparar Hit@K/MRR. Objetivo: medir si `assignment` aporta sobre el CBR o es redundante (es el mismo campo `Assigned To` que la etiqueta). TriagerX lo usa con peso 0.5 y su grid incluye 0 — replicar esa lógica. Salida: decidir el valor de `ip_assignment` (mantener 0.5 o llevar a 0).
 
 ### Fase 3 — Integración (semana 5)
 
-- [ ] Módulo 5: agregador `FS=NPS+W_f·NIS` + filtro.
+- [x] Módulo 5: agregador `FS=NPS+W_f·NIS` + filtro — *`src/triager_omega/modules/aggregator.py` (`TriagerAggregator`) + `cbr/predict.py` (`CbrPredictor`→NPS)*.
+  - Sanity check: `W_f=0` reproduce exactamente el CBR-solo. Grid search de `W_f` en val (`--grid`).
+  - **Resultado del sistema completo en el piloto** (W_f=0.1 sintonizado en val; TriagerX usa 0.7 pero aquí el CBR ≫ IBR, así que un W_f alto degrada): **test** Hit@1 0.749→**0.760**, Hit@5 0.964→**0.967**, Hit@10 0.991→**0.993**, MRR 0.847→**0.854** sobre el CBR-solo. El IBR aporta una mejora modesta pero consistente.
+  - **Comparación CBR (3 modos) + IBR** (piloto, IBR fijo sobre índice `distilled`; W_f óptimo en val por MRR, aplicado a test):
+
+    | Config | CBR-solo (test) Hit@1 / Hit@5 / Hit@10 / MRR | +IBR (W_f) test Hit@1 / Hit@5 / Hit@10 / MRR |
+    |---|---|---|
+    | raw + IBR | 0.7517 / 0.9591 / 0.9839 / 0.8440 | (0.4) 0.7430▼ / 0.9709 / 0.9907 / 0.8473 |
+    | distilled + IBR | 0.7313 / 0.9591 / 0.9845 / 0.8347 | (0.2) 0.7412 / 0.9635 / 0.9895 / 0.8415 |
+    | **both + IBR** | 0.7492 / 0.9641 / 0.9913 / 0.8473 | **(0.1) 0.7604 / 0.9666 / 0.9932 / 0.8542** |
+
+    Hallazgos: (1) **cuanto más débil el CBR, más peso tolera y aporta el IBR** (W_f óptimo: both 0.1 < distilled 0.2 < raw 0.4); (2) el IBR mejora sobre todo Hit@1/MRR a W_f bajo, y Hit@5 a W_f alto, pero subir W_f por Hit@5 **cuesta Hit@1** (trade-off); (3) **`distilled` solo es el peor CBR** → confirma la decisión §5.8 de concatenar crudo+destilado (`both`) en vez de reemplazar. **Ganador global: `both` + IBR @ W_f=0.1** (mejora a su CBR-solo en todas las métricas; = default de `config.py`).
 - [ ] `pipeline.py`: clase end-to-end con métodos `fit()`, `predict(bug_dict)`, `predict_topk()`.
 - [ ] Integración smoke test sobre 100 bugs de validación.
 - [ ] CLI de inferencia (`python -m triager_omega.pipeline predict --bug-id ...`).

@@ -87,7 +87,11 @@ class Settings(BaseSettings):
     ibr_tau: float = 0.6            # umbral de similitud coseno (TriagerX: similarity_threshold=0.6)
     ibr_top_k_retrieve: int = 20    # cap de issues similares por query (paper: 20)
     ibr_lambda: float = 0.01        # decaimiento temporal (1/día) (TriagerX: time_decay_factor=0.01)
-    ibr_w_f: float = 0.7            # peso del IBR en FS = NPS + W_f·NIS (TriagerX: similarity_prediction_weight=0.7)
+    # peso del IBR en FS = NPS + W_f·NIS. TriagerX usa 0.7 (similarity_prediction_weight,
+    # calibrado en OpenJ9), pero en nuestro piloto Mozilla el CBR ≫ IBR, así que un W_f
+    # alto degrada; sintonizado en validación da ~0.1 (mejor Hit@1/MRR). Re-tunear con
+    # `aggregator eval --grid` si cambian datos/modelo.
+    ibr_w_f: float = 0.1
     # Interaction Points: 3 tipos como TriagerX (contribution/assignment/discussion).
     # commit Y review se fusionan en `contribution` (TriagerX no separa revisores:
     # pull_request+commits comparten contribution_score). Valores = triagerx_config.yaml.
@@ -128,6 +132,27 @@ class Settings(BaseSettings):
     @property
     def distillations_path(self) -> Path:
         return self.pilot_dir / "distillations.parquet"
+
+    # ----- Rutas del IBR (Módulo 4) -----
+    @property
+    def repo_interactions_path(self) -> Path:
+        """Interacciones commit/review minadas de gecko-dev (data/repo_miner.py)."""
+        return self.artifacts_dir / "repo_interactions.parquet"
+
+    @property
+    def discussion_interactions_path(self) -> Path:
+        """Interacciones discussion limpias (scripts/build_discussion_interactions.py)."""
+        return self.artifacts_dir / "discussion_interactions.parquet"
+
+    @property
+    def ibr_embeddings_path(self) -> Path:
+        """Matriz de embeddings SBERT de los bugs de train del piloto (índice IBR)."""
+        return self.pilot_dir / "ibr_embeddings.npy"
+
+    @property
+    def ibr_bug_ids_path(self) -> Path:
+        """Bug Ids alineados fila a fila con ibr_embeddings.npy."""
+        return self.pilot_dir / "ibr_bug_ids.npy"
 
     # ----- Rutas a los parquets de entrada -----
     @property
