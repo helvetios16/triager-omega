@@ -338,6 +338,8 @@ Vector de probabilidades `p_CBR ∈ ℝ^{num_classes}`. Se preserva como diccion
 
 CBR mira solo texto. IBR explota **señal de interacción histórica**: quién ha *trabajado* en bugs parecidos y qué tan recientemente, distinguiendo el **tipo** de trabajo. Resolver/parchear un bug (commit) pesa más que solo comentarlo (discussion).
 
+> **⚠️ Caveat empírico (ablación §11.3, Fase 2 semana 4).** Esta jerarquía de pesos (contribution ≫ assignment ≫ discussion) es la de TriagerX, calibrada en OpenJ9/GitHub donde la etiqueta es el contribuidor de código. **En el piloto Mozilla resulta al revés**: `contribution` (commit/review) no aporta sobre el CBR (apunta a revisores ≠ assignee), mientras `assignment` y `discussion` son las útiles (+2.9 / +2.0pp Hit@1 cada una sola, vs +1.1pp todas juntas). Los IP necesitan re-tuneo para Mozilla (etiqueta = `Assigned To`).
+
 ### 7.2 Tabla de interacciones (Interaction Table)
 
 El IBR consume una tabla larga `(bug_id, Contributor Id, kind, timestamp)` construida desde **tres fuentes**, porque los parquets de Bugzilla por sí solos solo dan `assignment` y `discussion`; la señal de código (`commit`/`review`) se recupera minando git:
@@ -543,9 +545,9 @@ mozilla::SessionStore::Restore. Stacktrace shows ...
 | 4 | Top-k similares (`ibr_top_k_retrieve`) | 20 | {20, 50, 100} |
 | 4 | Umbral similitud τ (`ibr_tau`) | 0.6 | [0, 2] paso 0.1 (TriagerX) |
 | 4 | λ decaimiento (1/día, `ibr_lambda`) | 0.01 | {0.005, 0.01, 0.02, 0.05} |
-| 4 | IP contribution commit+review (`ip_contribution`) | 1.5 | [0, 2] paso 0.1 |
+| 4 | IP contribution commit+review (`ip_contribution`) | **0.0** (Mozilla re-tune; TriagerX 1.5) | [0, 2] paso 0.1 |
 | 4 | IP assignment (`ip_assignment`) | 0.5 | [0, 2] paso 0.1 |
-| 4 | IP discussion (`ip_discussion`) | 0.1 | [0, 2] paso 0.1 |
+| 4 | IP discussion (`ip_discussion`) | **0.5** (Mozilla re-tune; TriagerX 0.1) | [0, 2] paso 0.1 |
 | 5 | `W_f` (peso del IBR en `FS=NPS+W_f·NIS`) | 0.1 (Mozilla; TriagerX/OpenJ9: 0.7) | (0, 1) paso 0.1 |
 | 5 | K (Top-K operativo) | 5 | {1, 3, 5, 10} eval |
 
@@ -553,7 +555,7 @@ mozilla::SessionStore::Restore. Stacktrace shows ...
 
 1. Línea base con valores por defecto.
 2. Tuning de DeBERTa (lr, epochs).
-3. Tuning de IBR (τ, λ, Top-k e Interaction Points) — grid search estilo TriagerX (Tabla II del paper).
+3. Tuning de IBR (τ, λ, Top-k e Interaction Points) — grid search estilo TriagerX (Tabla II del paper). **[x] Interaction Points re-tuneados para Mozilla**: grid sobre `(ip_contribution, ip_assignment, ip_discussion, W_f)` sintonizado en val (MRR), reportado en test (CBR=both). Como el NIS es min-max, solo importa el *ratio*. **Resultado**: óptimo robusto en `contribution=0`, `assignment≈discussion` (meseta plana 0/0.5/0.5 ≡ 0/1/1), W_f=0.1. Test **Hit@1=0.7746, Hit@5=0.9666, Hit@10=0.9932, MRR=0.8613** vs TriagerX-default (1.5/0.5/0.1) 0.7604/0.8542 (**+1.4pp Hit@1**) y CBR-solo 0.7492/0.8473 (**+2.5pp Hit@1, +1.5pp MRR**). Aplicado a `config.py` (defaults 0/0.5/0.5). *Re-confirmar a escala 450 devs: con el CBR más débil, `contribution` podría volver a aportar.*
 4. Tuning de `W_f` en validación con DeBERTa e IBR ya congelados.
 
 ---
@@ -579,7 +581,7 @@ Reportar Hit@K y MRR para:
 ### 11.3 Ablations
 
 - Sin filtro de candidatos.
-- Sin decaimiento temporal en IBR (λ=0).
+- [x] **Sin decaimiento temporal en IBR (λ=0)** *(corrida, `IBR_LAMBDA` por env)*. **Resultado**: en IBR-solo (test) **λ=0 es el mejor** (Hit@1 0.643 / MRR 0.768) y subir λ empeora monótonamente (λ=0.05 → 0.617/0.751); el decaimiento *perjudica* en este piloto (ventana temporal corta 2021+, devs activos de forma estable → penalizar lo viejo pierde señal). End-to-end es **irrelevante**: full system test W_f=0.1 da λ=0→0.7585 vs λ=0.01→0.7604 (dentro del ruido). **Decisión: λ=0.01 (default TriagerX) es seguro; la recencia no es señal útil en Mozilla-piloto.**
 - Sin muestreo ponderado.
 - **Estrategias de balanceo de la cola larga** (comparativa controlada, mismo modelo/seed/split, métrica clave = Hit@K **segmentado por frecuencia del dev**, sobre todo en el bucket cola):
   - (a) **Baseline** sin balanceo (sampler uniforme).
@@ -592,7 +594,7 @@ Reportar Hit@K y MRR para:
 - **IBR solo-comentarios** (la versión anterior del plan): desactivar `commit`/`review`/`assignment`, dejar solo `discussion`. Mide cuánto aporta la señal de código frente al IBR original.
 - **Por tipo de interacción** (3 tipos, esquema TriagerX): quitar `contribution` (commit+review, sin minería gecko-dev), quitar `assignment`, quitar `discussion` — aísla la contribución de cada fuente poniendo su IP a 0.
 - **¿Influye `assignment`? (ablación dedicada)**: correr el IBR **con** (`ip_assignment=0.5`) y **sin** (`ip_assignment=0`) y comparar Hit@K/MRR. Motivación: `assignment` sale del campo `Assigned To`, que **es la misma etiqueta que predice el CBR**, así que podría ser redundante con él (ver §8). Hipótesis: aporta poco sobre el CBR, mucho menos que `contribution`. **Referencia TriagerX**: su IBR usa assignment (`direct_assignment` + `last_assignment`) con peso 0.5 (vs contribution 1.5); su grid recorre `[0, 2]` paso 0.1 incluyendo el 0, así que ya prueba implícitamente "sin assignment". Decisión a tomar con el resultado: mantener `ip_assignment=0.5` o llevarlo a 0.
-- **Agregación aditiva vs convexa**: `FS=NPS+W_f·NIS` (TriagerX) frente al viejo `α·CBR+(1−α)·IBR`.
+- [x] **Agregación aditiva vs convexa**: `FS=NPS+W_f·NIS` (TriagerX) frente al viejo `α·CBR+(1−α)·IBR`. *(corrida, CBR=both, sintonizadas en val por MRR)*. **Resultado**: empatadas — test aditiva (W_f=0.1) Hit@1 0.7604 / MRR 0.8542 vs convexa (α=0.9) 0.7616 / 0.8550 (Δ +0.1pp, ruido). **Son la misma familia**: ambas son combinación lineal de NPS y NIS, y el ranking solo depende del *ratio* de pesos → aditiva W_f=0.1 ↔ convexa α≈0.91. **Decisión: quedarse con la aditiva de TriagerX** (interpretación más limpia: NPS intacto + IBR como bonus acotado por W_f).
 
 ### 11.4 Reportes
 
@@ -756,7 +758,17 @@ triager-omega/
 - [x] Scoring `IS += s_j·IP[kind]·exp(−λΔt)` + normalización NIS (min-max, `_normalize_nis`).
 - [x] **Baseline IBR-solo** (`ibr eval`): piloto test Hit@1=0.63, Hit@5=0.92, Hit@10=0.95, MRR=0.76, cobertura(NIS>0 del dev real)=0.92.
 - [ ] Tests: λ=0 vs λ=0.01; ablation solo-`discussion` vs todos los tipos; anti-fuga temporal (`t<t_now`).
-- [ ] **Ablación `assignment` on/off (§11.3):** correr el IBR con `ip_assignment=0.5` (valor TriagerX) vs `ip_assignment=0`, mismos splits/seed, y comparar Hit@K/MRR. Objetivo: medir si `assignment` aporta sobre el CBR o es redundante (es el mismo campo `Assigned To` que la etiqueta). TriagerX lo usa con peso 0.5 y su grid incluye 0 — replicar esa lógica. Salida: decidir el valor de `ip_assignment` (mantener 0.5 o llevar a 0).
+- [x] **Ablaciones del IBR por tipo de interacción (§11.3):** corridas vía env (`IP_CONTRIBUTION`/`IP_ASSIGNMENT`/`IP_DISCUSSION`=0); el índice no se reconstruye, solo cambia el scoring. Sistema completo (CBR both + IBR), W_f=0.1 sintonizado en val, **test**, vs CBR-solo (Hit@1 0.7492 / MRR 0.8473):
+
+    | Config IBR (C/A/D) | Hit@1 | Hit@5 | Hit@10 | MRR | Δ Hit@1 |
+    |---|---|---|---|---|---|
+    | only-contribution (1.5/0/0) | 0.7480 | 0.9666 | 0.9926 | 0.8476 | ~0 (W_f* val = 0) |
+    | only-discussion (0/0/0.1) | 0.7690 | 0.9672 | 0.9932 | 0.8583 | **+2.0pp** |
+    | only-assignment (0/0.5/0) | 0.7777 | 0.9666 | 0.9932 | 0.8627 | **+2.9pp** |
+    | assignment+discussion (0/0.5/0.1) | 0.7765 | 0.9666 | 0.9932 | 0.8620 | +2.7pp |
+    | ALL — TriagerX (1.5/0.5/0.1) | 0.7604 | 0.9666 | 0.9932 | 0.8542 | +1.1pp |
+
+  **Hallazgos**: (1) **`contribution` (commit/review) no aporta, incluso daña** (W_f óptimo en val = 0): apunta a committers/revisores ≠ assignee (la etiqueta) + ruido de identidad gecko-dev. (2) **`assignment` y `discussion` son las útiles; cada una SOLA supera a la config con-todo** porque los pesos de TriagerX sobre-ponderan `contribution` (1.5) y, al normalizar NIS min-max, contribution domina y diluye lo bueno. (3) En *IBR-solo* el cuadro es otro (assignment 0.628→0.581 al quitarlo; quitar contribution SUBE Hit@1 a 0.672; discussion ≈ nula) — pero lo que importa es el sistema completo. **CORRECCIÓN**: la ablación previa de `assignment` on/off daba "−0.19pp ⇒ redundante" pero estaba **confundida** (dejaba `contribution` dentro, que domina el NIS y enmascara); aislado, `assignment` es la MEJOR fuente (+2.9pp), **no redundante**. (4) **Causa raíz**: los IP de TriagerX se calibraron en OpenJ9/GitHub (etiqueta = contribuidor de código → contribution correcto); en Mozilla la etiqueta es `Assigned To` → mandan assignment/discussion. **Acción pendiente: re-tunear los IP (§10.2 paso 3), probablemente bajar/anular `ip_contribution` y subir `ip_assignment`/`ip_discussion`.** No es fuga (`t<t_now`).
 
 ### Fase 3 — Integración (semana 5)
 

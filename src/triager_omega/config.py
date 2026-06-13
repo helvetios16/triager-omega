@@ -94,10 +94,17 @@ class Settings(BaseSettings):
     ibr_w_f: float = 0.1
     # Interaction Points: 3 tipos como TriagerX (contribution/assignment/discussion).
     # commit Y review se fusionan en `contribution` (TriagerX no separa revisores:
-    # pull_request+commits comparten contribution_score). Valores = triagerx_config.yaml.
-    ip_contribution: float = 1.5   # commit + review (gecko-dev) → un solo peso, como TriagerX
-    ip_assignment: float = 0.5
-    ip_discussion: float = 0.1
+    # pull_request+commits comparten contribution_score).
+    # VALORES RE-TUNEADOS PARA MOZILLA (ablación §11.3 + grid §10.2). TriagerX usa
+    # 1.5/0.5/0.1 (OpenJ9, etiqueta=contribuidor de código), pero aquí la etiqueta es
+    # `Assigned To`: `contribution` (commit/review) apunta a revisores ≠ assignee y
+    # NO aporta (incluso daña), mientras assignment y discussion son las útiles.
+    # Como el NIS se normaliza min-max, solo importa el RATIO → 0/0.5/0.5 ≡ 0/1/1.
+    # Re-tuneado: +1.4pp Hit@1 sobre el default TriagerX. Re-confirmar a escala 450 devs
+    # (con el CBR más débil, `contribution` podría volver a aportar).
+    ip_contribution: float = 0.0   # commit + review (gecko-dev): apagado en Mozilla (TriagerX: 1.5)
+    ip_assignment: float = 0.5     # (TriagerX: 0.5)
+    ip_discussion: float = 0.5     # (TriagerX: 0.1)
 
     # ----- Rutas derivadas a artefactos del Módulo 1 -----
     @property
