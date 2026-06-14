@@ -12,11 +12,12 @@ con **NVIDIA GeForce RTX 5060 Laptop GPU (8 GB)** vía SSH. Fecha: 2026-06-13.
 | Python | 3.12 |
 | Dataset | Piloto 20 devs · train 5842 / val 1749 / test 1615 (9206 bugs etiquetados) |
 
-> ⚠️ **Comparabilidad con el piloto previo en MPS.** Esta corrida usó **4 épocas**
-> (default actual de `train.py`); el piloto anterior en MPS se entrenó con **5 épocas**.
-> Por tanto las pequeñas diferencias frente al ~0.749 Hit@1 reportado en MPS no son
-> apples-to-apples: pesan tanto el cambio de backend (CUDA/torch 2.11, fp32) como
-> la época de menos. El **orden cualitativo** entre variantes sí se mantiene.
+> **Nº de épocas: 4 (elegido, no casual).** Esta corrida usó **4 épocas**; el piloto
+> previo en MPS usó 5. Empíricamente **4 épocas rinde mejor que 5** en este CBR (5
+> tiende a sobreajustar), así que 4 es la configuración preferida, no una época "de
+> menos". Nota de comparabilidad con MPS: además del nº de épocas, cambia el backend
+> (CUDA/torch 2.11, fp32), por lo que los valores no son apples-to-apples; el **orden
+> cualitativo** entre variantes sí se mantiene.
 
 ## Recipe estable (importante)
 
