@@ -139,10 +139,69 @@ class WeightedTrainer(Trainer):
 
 
 # --------------------------------------------------------------------------- #
+# Dispositivo y precisión (autodetección)
+# --------------------------------------------------------------------------- #
+def detect_device() -> str:
+    """Detecta el acelerador disponible: CUDA > MPS > CPU."""
+    if torch.cuda.is_available():
+        return "cuda"
+    mps = getattr(torch.backends, "mps", None)
+    if mps is not None and mps.is_available():
+        return "mps"
+    return "cpu"
+
+
+def resolve_runtime(args: argparse.Namespace) -> dict:
+    """Resuelve dispositivo, precisión, acumulación y eps de AdamW.
+
+    Los valores 'auto' (None en la CLI) se ajustan al dispositivo:
+      - CUDA: bf16 ON (si la GPU lo soporta) + batch físico chico con
+        gradient accumulation para caber en GPUs de poca VRAM (p.ej. 8 GB);
+        adam_eps=1e-8.
+      - MPS: sin bf16; adam_eps=1e-4 (evita el nan de DeBERTa-v3 en MPS).
+      - CPU: sin bf16; adam_eps=1e-8.
+    Cualquier flag pasado explícitamente tiene prioridad sobre el 'auto'.
+    """
+    device = "cpu" if args.cpu else detect_device()
+
+    if args.bf16 == "on":
+        use_bf16 = True
+    elif args.bf16 == "off":
+        use_bf16 = False
+    else:  # auto
+        use_bf16 = device == "cuda" and torch.cuda.is_bf16_supported()
+
+    adam_eps = args.adam_eps
+    if adam_eps is None:
+        adam_eps = 1e-4 if device == "mps" else 1e-8
+
+    batch_size = args.batch_size if args.batch_size is not None else (8 if device == "cuda" else 16)
+    grad_accum = args.grad_accum if args.grad_accum is not None else (2 if device == "cuda" else 1)
+
+    rt = {
+        "device": device,
+        "bf16": use_bf16,
+        "batch_size": batch_size,
+        "grad_accum": grad_accum,
+        "adam_eps": adam_eps,
+        "eff_batch": batch_size * grad_accum,
+        "gpu": torch.cuda.get_device_name(0) if device == "cuda" else "-",
+    }
+    return rt
+
+
+# --------------------------------------------------------------------------- #
 # Entrenamiento
 # --------------------------------------------------------------------------- #
 def run(args: argparse.Namespace) -> dict:
     torch.manual_seed(args.seed)
+
+    rt = resolve_runtime(args)
+    logger.info(
+        "Runtime | device={} gpu={} bf16={} batch={} grad_accum={} (eff_batch={}) adam_eps={}",
+        rt["device"], rt["gpu"], rt["bf16"], rt["batch_size"],
+        rt["grad_accum"], rt["eff_batch"], rt["adam_eps"],
+    )
 
     df, label_encoder = build_dataframe(args.text_mode)
     num_labels = len(label_encoder)
@@ -185,10 +244,12 @@ def run(args: argparse.Namespace) -> dict:
     training_args = TrainingArguments(
         output_dir=str(settings.pilot_dir / "cbr_trainer"),
         num_train_epochs=args.epochs,
-        per_device_train_batch_size=args.batch_size,
-        per_device_eval_batch_size=args.batch_size,
+        per_device_train_batch_size=rt["batch_size"],
+        per_device_eval_batch_size=rt["batch_size"],
+        gradient_accumulation_steps=rt["grad_accum"],
         learning_rate=args.lr,
-        adam_epsilon=args.adam_eps,  # 1e-4: evita el nan de DeBERTa-v3 en MPS
+        adam_epsilon=rt["adam_eps"],  # 1e-4 en MPS (nan DeBERTa-v3), 1e-8 en CUDA/CPU
+        bf16=rt["bf16"],
         weight_decay=0.01,
         warmup_ratio=0.1,
         logging_steps=20,
@@ -250,16 +311,21 @@ def main() -> None:
     p.add_argument("--text-mode", choices=["raw", "distilled", "both"], default="both",
                    help="qué texto usar (ablación §11.2.4): crudo, destilado o ambos")
     p.add_argument("--epochs", type=float, default=4.0)
-    p.add_argument("--batch-size", type=int, default=16)
+    p.add_argument("--batch-size", type=int, default=None,
+                   help="batch físico por dispositivo; auto = 8 en CUDA, 16 en MPS/CPU")
+    p.add_argument("--grad-accum", type=int, default=None,
+                   help="pasos de gradient accumulation; auto = 2 en CUDA, 1 en MPS/CPU")
+    p.add_argument("--bf16", choices=["auto", "on", "off"], default="auto",
+                   help="precisión bf16; auto = ON en CUDA compatible, OFF en MPS/CPU")
     p.add_argument("--lr", type=float, default=2e-5)
     p.add_argument("--max-length", type=int, default=256)
     p.add_argument("--no-weighted", action="store_true", help="desactiva el sampler ponderado")
     p.add_argument("--eval-only", action="store_true",
                    help="carga el modelo afinado de cbr_model_<modo> y solo evalúa val/test (sin reentrenar)")
     p.add_argument("--cpu", action="store_true", help="fuerza CPU")
-    # Mismo ajuste que train_cbr_quick: eps de AdamW alto para el nan en MPS.
-    p.add_argument("--adam-eps", type=float, default=1e-4,
-                   help="epsilon de AdamW; 1e-4 evita el nan de DeBERTa-v3 en MPS (usa 1e-8 en CPU/CUDA)")
+    # eps de AdamW: auto = 1e-4 en MPS (nan de DeBERTa-v3) y 1e-8 en CUDA/CPU.
+    p.add_argument("--adam-eps", type=float, default=None,
+                   help="epsilon de AdamW; auto = 1e-4 en MPS (evita el nan de DeBERTa-v3), 1e-8 en CUDA/CPU")
     p.add_argument("--seed", type=int, default=settings.seed)
     run(p.parse_args())
 
