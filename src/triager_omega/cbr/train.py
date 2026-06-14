@@ -154,12 +154,15 @@ def detect_device() -> str:
 def resolve_runtime(args: argparse.Namespace) -> dict:
     """Resuelve dispositivo, precisión, acumulación y eps de AdamW.
 
-    Los valores 'auto' (None en la CLI) se ajustan al dispositivo:
-      - CUDA: bf16 ON (si la GPU lo soporta) + batch físico chico con
-        gradient accumulation para caber en GPUs de poca VRAM (p.ej. 8 GB);
-        adam_eps=1e-8.
-      - MPS: sin bf16; adam_eps=1e-4 (evita el nan de DeBERTa-v3 en MPS).
-      - CPU: sin bf16; adam_eps=1e-8.
+    Los valores 'auto' (None en la CLI) se ajustan al hardware/modelo:
+      - bf16 auto = OFF en todos los dispositivos. DeBERTa-v3 DIVERGE en bf16
+        (grad_norm explota a miles, la loss salta y colapsa a azar; verificado
+        en la RTX 5060). El recipe estable es fp32. Usa --bf16 on solo con
+        modelos numéricamente robustos.
+      - adam_eps auto = 1e-4: valor estable para DeBERTa-v3; evita el nan en
+        MPS y la divergencia en CUDA que provoca 1e-8.
+      - En CUDA: batch físico chico + gradient accumulation para caber en
+        GPUs de poca VRAM (p.ej. los 8 GB de la RTX 5060).
     Cualquier flag pasado explícitamente tiene prioridad sobre el 'auto'.
     """
     device = "cpu" if args.cpu else detect_device()
@@ -168,12 +171,12 @@ def resolve_runtime(args: argparse.Namespace) -> dict:
         use_bf16 = True
     elif args.bf16 == "off":
         use_bf16 = False
-    else:  # auto
-        use_bf16 = device == "cuda" and torch.cuda.is_bf16_supported()
+    else:  # auto: OFF — DeBERTa-v3 diverge en bf16 (ver docstring).
+        use_bf16 = False
 
     adam_eps = args.adam_eps
     if adam_eps is None:
-        adam_eps = 1e-4 if device == "mps" else 1e-8
+        adam_eps = 1e-4  # estable para DeBERTa-v3 en MPS y CUDA
 
     batch_size = args.batch_size if args.batch_size is not None else (8 if device == "cuda" else 16)
     grad_accum = args.grad_accum if args.grad_accum is not None else (2 if device == "cuda" else 1)
@@ -316,16 +319,16 @@ def main() -> None:
     p.add_argument("--grad-accum", type=int, default=None,
                    help="pasos de gradient accumulation; auto = 2 en CUDA, 1 en MPS/CPU")
     p.add_argument("--bf16", choices=["auto", "on", "off"], default="auto",
-                   help="precisión bf16; auto = ON en CUDA compatible, OFF en MPS/CPU")
+                   help="precisión bf16; auto = OFF (DeBERTa-v3 diverge en bf16). Usa 'on' solo en modelos robustos")
     p.add_argument("--lr", type=float, default=2e-5)
     p.add_argument("--max-length", type=int, default=256)
     p.add_argument("--no-weighted", action="store_true", help="desactiva el sampler ponderado")
     p.add_argument("--eval-only", action="store_true",
                    help="carga el modelo afinado de cbr_model_<modo> y solo evalúa val/test (sin reentrenar)")
     p.add_argument("--cpu", action="store_true", help="fuerza CPU")
-    # eps de AdamW: auto = 1e-4 en MPS (nan de DeBERTa-v3) y 1e-8 en CUDA/CPU.
+    # eps de AdamW: auto = 1e-4, valor estable para DeBERTa-v3 (MPS y CUDA).
     p.add_argument("--adam-eps", type=float, default=None,
-                   help="epsilon de AdamW; auto = 1e-4 en MPS (evita el nan de DeBERTa-v3), 1e-8 en CUDA/CPU")
+                   help="epsilon de AdamW; auto = 1e-4 (estable para DeBERTa-v3: evita el nan en MPS y la divergencia en CUDA)")
     p.add_argument("--seed", type=int, default=settings.seed)
     run(p.parse_args())
 
