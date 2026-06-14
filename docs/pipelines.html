@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Pipelines: TriagerX vs. triager-omega</title>
+<style>
+  :root{
+    --bg:#0f1420; --panel:#161d2e; --ink:#e8edf6; --muted:#9aa7bd;
+    --cbr:#3b82f6; --cbr-bg:#11233f; --ibr:#22c55e; --ibr-bg:#0f2a1c;
+    --agg:#a855f7; --agg-bg:#241338; --in:#f59e0b; --in-bg:#2e2208;
+    --ours:#f43f5e; --line:#3a465c; --card:#1d2740;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    line-height:1.5;padding:32px 16px 64px}
+  h1{text-align:center;font-size:26px;margin:0 0 4px}
+  .sub{text-align:center;color:var(--muted);margin:0 0 36px;font-size:14px}
+  .wrap{max-width:1080px;margin:0 auto}
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:16px;
+    padding:24px 22px 30px;margin:0 0 26px;box-shadow:0 10px 30px rgba(0,0,0,.25)}
+  .panel-title{display:flex;align-items:center;gap:10px;font-size:19px;font-weight:700;margin:0 0 2px}
+  .panel-title .tag{font-size:11px;font-weight:600;padding:3px 9px;border-radius:999px;letter-spacing:.3px}
+  .tag.base{background:#27324a;color:#aebfdc}
+  .tag.ours{background:var(--ours);color:#fff}
+  .panel-note{color:var(--muted);font-size:13px;margin:0 0 22px}
+  /* flow */
+  .flow{display:flex;flex-direction:column;align-items:center;gap:0}
+  .box{border-radius:12px;padding:12px 16px;text-align:center;width:100%;max-width:560px;border:1px solid}
+  .box .t{font-weight:700;font-size:14.5px}
+  .box .d{font-size:12px;color:var(--muted);margin-top:3px}
+  .box.io{background:var(--in-bg);border-color:var(--in)}
+  .box.io .t{color:var(--in)}
+  .box.agg{background:var(--agg-bg);border-color:var(--agg);max-width:600px}
+  .box.agg .t{color:#d6b4ff}
+  .formula{font-family:"SF Mono",ui-monospace,Menlo,Consolas,monospace;font-size:13px;
+    background:#0c111c;border:1px solid var(--line);border-radius:8px;padding:5px 10px;margin-top:8px;display:inline-block}
+  .arrow{width:2px;height:22px;background:var(--line);position:relative}
+  .arrow::after{content:"";position:absolute;left:50%;bottom:-1px;transform:translateX(-50%);
+    border-left:5px solid transparent;border-right:5px solid transparent;border-top:7px solid var(--line)}
+  .branches{display:flex;gap:22px;width:100%;justify-content:center;flex-wrap:wrap}
+  .branch{flex:1 1 320px;max-width:430px;display:flex;flex-direction:column;align-items:center;gap:0}
+  .branch-head{font-weight:700;font-size:13px;padding:6px 12px;border-radius:999px;margin-bottom:10px}
+  .branch.cbr .branch-head{background:var(--cbr-bg);color:#9cc4ff;border:1px solid var(--cbr)}
+  .branch.ibr .branch-head{background:var(--ibr-bg);color:#86efac;border:1px solid var(--ibr)}
+  .step{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:9px 12px;width:100%;text-align:center}
+  .step .t{font-weight:600;font-size:13px}
+  .step .d{font-size:11px;color:var(--muted);margin-top:2px}
+  .branch.cbr .step{border-left:3px solid var(--cbr)}
+  .branch.ibr .step{border-left:3px solid var(--ibr)}
+  .twin{display:flex;gap:8px;width:100%}
+  .twin .step{flex:1}
+  .merge{font-size:12px;color:var(--muted);margin:6px 0}
+  .star{color:var(--ours);font-weight:700}
+  .ours-badge{display:inline-block;background:var(--ours);color:#fff;font-size:10px;font-weight:700;
+    padding:2px 7px;border-radius:999px;margin-left:6px;vertical-align:middle}
+  .result{font-size:11.5px;color:#cfe6d8;background:#11241a;border:1px solid #1f5236;
+    border-radius:7px;padding:4px 9px;margin-top:7px;display:inline-block}
+  .vs{text-align:center;color:var(--muted);font-size:13px;margin:0 0 26px}
+  .vs span{background:var(--panel);border:1px solid var(--line);border-radius:999px;padding:6px 16px}
+  .legend{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:18px 22px;margin-top:6px}
+  .legend h3{margin:0 0 12px;font-size:15px}
+  .legend table{width:100%;border-collapse:collapse;font-size:13px}
+  .legend td,.legend th{padding:7px 10px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}
+  .legend th{color:var(--muted);font-weight:600}
+  .legend td.k{color:var(--ours);font-weight:600;white-space:nowrap}
+  .foot{color:var(--muted);font-size:12px;text-align:center;margin-top:24px}
+  @media print{body{background:#fff;color:#000}.panel,.legend{box-shadow:none}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Recomendación de desarrolladores para bugs</h1>
+  <p class="sub">Pipeline de <b>TriagerX</b> (referencia) vs. <b>triager-omega</b> (este trabajo)</p>
+
+  <!-- ===================== TRIAGERX ===================== -->
+  <div class="panel">
+    <div class="panel-title">TriagerX <span class="tag base">paper de referencia</span></div>
+    <p class="panel-note">CBR = ensemble de <b>dos transformers clasificadores</b>; IBR sobre interacciones de GitHub; fusión aditiva.</p>
+
+    <div class="flow">
+      <div class="box io"><div class="t">Bug report</div><div class="d">título + descripción</div></div>
+      <div class="arrow"></div>
+
+      <div class="branches">
+        <!-- CBR -->
+        <div class="branch cbr">
+          <div class="branch-head">CBR · Content-Based Recommender</div>
+          <div class="twin">
+            <div class="step"><div class="t">RoBERTa</div><div class="d">clasificador → softmax</div></div>
+            <div class="step"><div class="t">DeBERTa</div><div class="d">clasificador → softmax</div></div>
+          </div>
+          <div class="arrow"></div>
+          <div class="step"><div class="t">Promedio del ensemble</div><div class="d">2 transformers entrenados</div></div>
+          <div class="arrow"></div>
+          <div class="step"><div class="t">NPS</div><div class="d">score por dev, min-max [0,1]</div></div>
+        </div>
+        <!-- IBR -->
+        <div class="branch ibr">
+          <div class="branch-head">IBR · Interaction-Based Recommender</div>
+          <div class="step"><div class="t">SBERT</div><div class="d">recupera top-k bugs similares</div></div>
+          <div class="arrow"></div>
+          <div class="step"><div class="t">Interacciones de GitHub</div><div class="d">commits / pull requests del timeline</div></div>
+          <div class="arrow"></div>
+          <div class="step"><div class="t">NIS</div><div class="d">score por dev, min-max [0,1]</div></div>
+        </div>
+      </div>
+
+      <div class="merge">▼ &nbsp; se fusionan por dev (mismo orden de clases) &nbsp; ▼</div>
+      <div class="box agg">
+        <div class="t">Agregador WRA</div>
+        <div class="formula">FS(dev) = NPS(dev) + W_f · NIS(dev)</div>
+      </div>
+      <div class="arrow"></div>
+      <div class="box io"><div class="t">Top-K desarrolladores</div><div class="d">ranking final</div></div>
+    </div>
+  </div>
+
+  <p class="vs"><span>▼ &nbsp; mismo esqueleto, <b>CBR reemplazado</b> &nbsp; ▼</span></p>
+
+  <!-- ===================== TRIAGER-OMEGA ===================== -->
+  <div class="panel" style="border-color:var(--ours)">
+    <div class="panel-title">triager-omega <span class="tag ours">este trabajo</span></div>
+    <p class="panel-note">Se reemplaza el clasificador-ensemble por un <b class="star">CBR de recuperación (Case-Based Reasoning real)</b> — sin entrenamiento — y el IBR usa <b>interacciones tipadas</b>.</p>
+
+    <div class="flow">
+      <div class="box io"><div class="t">Bug report</div><div class="d">Summary + Product + Component</div></div>
+      <div class="arrow"></div>
+      <div class="step" style="max-width:560px;border-left:3px solid var(--in)">
+        <div class="t">Destilación con LLM <span class="d" style="display:inline">(opcional)</span></div>
+        <div class="d">vista "distilled" del texto → raw / distilled / both</div>
+      </div>
+      <div class="arrow"></div>
+
+      <div class="branches">
+        <!-- CBR recuperación -->
+        <div class="branch cbr">
+          <div class="branch-head">CBR de recuperación <span class="ours-badge">aportación</span></div>
+          <div class="step"><div class="t">SBERT — MPNet (congelado)</div><div class="d">embebe el bug · sin entrenar</div></div>
+          <div class="arrow"></div>
+          <div class="step"><div class="t">kNN: top-k casos similares</div><div class="d">coseno sobre bugs pasados</div></div>
+          <div class="arrow"></div>
+          <div class="step"><div class="t">Voto al resolvedor</div><div class="d">Σ similitud<sup>τ</sup> por dev → NPS</div></div>
+          <div class="result">OpenJ9 0.2715 (= ensemble) · Mozilla 0.718</div>
+        </div>
+        <!-- IBR -->
+        <div class="branch ibr">
+          <div class="branch-head">IBR · interacciones tipadas</div>
+          <div class="step"><div class="t">SBERT</div><div class="d">recupera top-k bugs similares</div></div>
+          <div class="arrow"></div>
+          <div class="step"><div class="t">Interaction Points por tipo</div><div class="d">contribution · assignment · discussion + decaimiento temporal</div></div>
+          <div class="arrow"></div>
+          <div class="step"><div class="t">NIS</div><div class="d">score por dev, min-max [0,1]</div></div>
+        </div>
+      </div>
+
+      <div class="merge">▼ &nbsp; fusión alineada por class_idx &nbsp; ▼</div>
+      <div class="box agg">
+        <div class="t">Agregador &nbsp;FS = NPS + W_f · NIS</div>
+        <div class="formula">W_f según régimen — Mozilla aporta (W_f≈0.8) · OpenJ9 cola larga no aporta</div>
+      </div>
+      <div class="arrow"></div>
+      <div class="box io"><div class="t">Top-K desarrolladores</div>
+        <div class="d">Mozilla full 0.7337 · OpenJ9 mejor = CBR-recuperación solo 0.2715</div></div>
+    </div>
+  </div>
+
+  <!-- ===================== DIFERENCIAS ===================== -->
+  <div class="legend">
+    <h3>Qué cambia respecto a TriagerX</h3>
+    <table>
+      <tr><th>Componente</th><th>TriagerX</th><th>triager-omega</th></tr>
+      <tr><td class="k">CBR</td>
+        <td>Ensemble de 2 transformers <b>clasificadores</b> (RoBERTa + DeBERTa), entrenados</td>
+        <td><b>Recuperación de casos</b> (kNN + voto al resolvedor) con encoder <b>congelado, sin entrenar</b>; simple e interpretable</td></tr>
+      <tr><td class="k">Texto</td>
+        <td>Título + descripción</td>
+        <td>+ <b>destilación con LLM</b> (vistas raw / distilled / both)</td></tr>
+      <tr><td class="k">IBR</td>
+        <td>Interacciones de GitHub (commits / PRs)</td>
+        <td><b>Interacciones tipadas</b> (contribution / assignment / discussion) con pesos IP + decaimiento temporal</td></tr>
+      <tr><td class="k">Fusión</td>
+        <td>FS = NPS + W_f·NIS (W_f fijo ≈ 0.7)</td>
+        <td>Misma fórmula; <b>W_f depende del régimen</b> de datos (hallazgo)</td></tr>
+      <tr><td class="k">Hallazgos</td>
+        <td>—</td>
+        <td>El recuperador <b>iguala su ensemble sin entrenar</b> (OpenJ9 0.2715 vs 0.270) y gana en cola larga; el IBR aporta solo cuando es fuerte (Mozilla sí, OpenJ9-50 no)</td></tr>
+    </table>
+  </div>
+
+  <p class="foot">triager-omega · diagrama generado para la tesis · métricas = Top-1 (Hit@1) en test</p>
+</div>
+</body>
+</html>
