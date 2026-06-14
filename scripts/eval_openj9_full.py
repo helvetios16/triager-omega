@@ -48,11 +48,6 @@ def run(args: argparse.Namespace) -> None:
         ibr_top_k_retrieve=args.top_k, ibr_tau=args.tau, ibr_lambda=args.lam,
         ip_contribution=args.ip_c, ip_assignment=args.ip_a, ip_discussion=args.ip_d,
     )
-    cbr_dir = cfg.openj9_dir / args.cbr_name
-    if not (cbr_dir / "label_encoder.json").exists():
-        raise SystemExit(f"No existe el CBR en {cbr_dir}. Corre antes scripts/train_openj9_cbr.py.")
-    le: dict[str, int] = json.loads((cbr_dir / "label_encoder.json").read_text())
-    num_classes = len(le)
     device = "cpu" if args.cpu else cfg.torch_device
 
     from pathlib import Path
@@ -64,20 +59,45 @@ def run(args: argparse.Namespace) -> None:
     test = pd.read_csv(test_csv).drop_duplicates("issue_number")
     train["text"] = train["text"].fillna("").astype(str)
     test["text"] = test["text"].fillna("").astype(str)
-    true_idx = test["owner"].map(le).to_numpy().astype(int)
 
     # ---------- CBR → NPS [N, C] ----------
-    logger.info("CBR: cargando {} y prediciendo NPS...", cbr_dir)
-    tok = AutoTokenizer.from_pretrained(str(cbr_dir))
-    model = AutoModelForSequenceClassification.from_pretrained(str(cbr_dir)).to(device).eval()
-    logits = []
-    with torch.no_grad():
-        texts = test["text"].tolist()
-        for i in range(0, len(texts), 32):
-            enc = tok(texts[i : i + 32], truncation=True, max_length=args.max_length,
-                      padding=True, return_tensors="pt").to(device)
-            logits.append(model(**enc).logits.float().cpu().numpy())
-    nps = normalize_rows(np.concatenate(logits, 0), how="minmax")
+    if args.cbr_mode == "retrieval":
+        # Case-Based Reasoning real: kNN sobre bugs pasados → voto al `owner` (resolvedor).
+        from cbr_retrieval_openj9 import label_encoder as _le_fn, vote_scores
+        from sentence_transformers import SentenceTransformer
+        le = _le_fn(train, test)
+        num_classes = len(le)
+        true_idx = test["owner"].map(le).to_numpy().astype(int)
+        train_cls = train["owner"].map(le).to_numpy().astype(int)
+        logger.info("CBR-recuperación: {} (k={}, τ={}, maxlen={})...",
+                    args.cbr_model, args.cbr_topk, args.cbr_tau, args.cbr_maxlen)
+        enc = SentenceTransformer(args.cbr_model, device=device)
+        enc.max_seq_length = args.cbr_maxlen
+        emb_tr = enc.encode(train["text"].tolist(), batch_size=64, convert_to_numpy=True,
+                            normalize_embeddings=True, show_progress_bar=False)
+        emb_te = enc.encode(test["text"].tolist(), batch_size=64, convert_to_numpy=True,
+                            normalize_embeddings=True, show_progress_bar=False)
+        sims = emb_te @ emb_tr.T
+        nps = normalize_rows(
+            vote_scores(sims, train_cls, num_classes, args.cbr_topk, args.cbr_tau), how="minmax")
+    else:
+        cbr_dir = cfg.openj9_dir / args.cbr_name
+        if not (cbr_dir / "label_encoder.json").exists():
+            raise SystemExit(f"No existe el CBR en {cbr_dir}. Corre antes scripts/train_openj9_cbr.py.")
+        le: dict[str, int] = json.loads((cbr_dir / "label_encoder.json").read_text())
+        num_classes = len(le)
+        true_idx = test["owner"].map(le).to_numpy().astype(int)
+        logger.info("CBR-clasificador: cargando {} y prediciendo NPS...", cbr_dir)
+        tok = AutoTokenizer.from_pretrained(str(cbr_dir))
+        model = AutoModelForSequenceClassification.from_pretrained(str(cbr_dir)).to(device).eval()
+        logits = []
+        with torch.no_grad():
+            texts = test["text"].tolist()
+            for i in range(0, len(texts), 32):
+                e = tok(texts[i : i + 32], truncation=True, max_length=args.max_length,
+                        padding=True, return_tensors="pt").to(device)
+                logits.append(model(**e).logits.float().cpu().numpy())
+        nps = normalize_rows(np.concatenate(logits, 0), how="minmax")
 
     # ---------- IBR → NIS [N, C] ----------
     logger.info("IBR: embebiendo train + scoring NIS (IP C/A/D={}/{}/{})...",
@@ -125,8 +145,15 @@ def main() -> None:
     p.add_argument("--ip-d", type=float, default=0.1)
     p.add_argument("--max-length", type=int, default=256)
     p.add_argument("--cpu", action="store_true")
+    # CBR: clasificador (DeBERTa entrenado) o recuperación (kNN sobre casos, sin entrenar).
+    p.add_argument("--cbr-mode", choices=["classifier", "retrieval"], default="classifier")
+    p.add_argument("--cbr-model", default="sentence-transformers/all-mpnet-base-v2",
+                   help="encoder para cbr-mode=retrieval (modelo ST o carpeta afinada)")
+    p.add_argument("--cbr-topk", type=int, default=50)
+    p.add_argument("--cbr-tau", type=float, default=2.0)
+    p.add_argument("--cbr-maxlen", type=int, default=384)
     # Set alternativo (50 clases): CBR/CSVs/interacciones propios sin pisar el 17-set.
-    p.add_argument("--cbr-name", default="cbr_model", help="subcarpeta del CBR en artifacts/openj9/")
+    p.add_argument("--cbr-name", default="cbr_model", help="subcarpeta del CBR-clasificador en artifacts/openj9/")
     p.add_argument("--train-csv", default=None)
     p.add_argument("--test-csv", default=None)
     p.add_argument("--interactions", default=None, help="parquet de interacciones (default: config)")
