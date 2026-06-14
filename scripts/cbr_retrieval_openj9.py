@@ -76,8 +76,10 @@ def main() -> None:
     p.add_argument("--loss", choices=["mnrl", "triplet"], default="mnrl",
                    help="mnrl=MultipleNegativesRanking (pares mismo-dev, estable); triplet=BatchAllTriplet (colapsa en datos chicos)")
     p.add_argument("--epochs", type=int, default=1)
-    p.add_argument("--ft-batch", type=int, default=32)
+    p.add_argument("--ft-batch", type=int, default=16)
     p.add_argument("--lr", type=float, default=2e-5, help="LR del fine-tuning (suave para no olvidar)")
+    p.add_argument("--max-seq-len", type=int, default=256,
+                   help="cap de tokens del encoder (memoria∝seq²; baja el thrashing en 8GB)")
     p.add_argument("--sweep", action="store_true", help="barre (k, τ) sobre los mismos embeddings")
     p.add_argument("--cpu", action="store_true")
     args = p.parse_args()
@@ -96,6 +98,7 @@ def main() -> None:
 
     device = "cpu" if args.cpu else cfg.torch_device
     model = SentenceTransformer(args.model, device=device)
+    model.max_seq_length = args.max_seq_len  # cap consistente para fine-tuning e inferencia
 
     if args.finetune:
         _finetune(model, train, train_cls, C, args, device)
