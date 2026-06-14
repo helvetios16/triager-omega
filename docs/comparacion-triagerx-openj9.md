@@ -107,6 +107,22 @@ donde el IBR-solo era *más fuerte* que el CBR (0.238 > 0.199) y aportaba +6.8 p
 > salto a 0.225 con 15 épocas confirma que la brecha inicial era entrenamiento, no
 > el modelo. Caveat: selección exacta de los 50 devs no idéntica (≥20 issues → 51).
 
+### 5. CBR de recuperación (Case-Based Reasoning real) — aporte propio
+Reemplazamos el CBR-clasificador por un **recuperador kNN** que vota al `owner` de
+los bugs pasados más similares. **Zero-shot (MPNet, k=50, sin entrenar): Top-1
+0.2715, MRR 0.408** → **iguala el ensemble de 2 transformers de TriagerX (0.270)** y
+supera a su DeBERTa-solo (0.189) y a nuestro clasificador (0.2322). El fine-tuning
+no mejora el Top-1 (triplet colapsa; MNRL ayuda al recall) y la fusión con el IBR
+tampoco a 50 clases (IBR débil y correlacionado). Detalle completo:
+**`docs/cbr-recuperacion.md`**.
+
+| CBR (50 clases) | Top-1 | MRR |
+|---|---|---|
+| Clasificador DeBERTa (TriagerX) | 0.189 | — |
+| Clasificador DeBERTa (nuestro, mejor) | 0.2322 | 0.361 |
+| Ensemble RoBERTa+DeBERTa (TriagerX) | 0.270 | — |
+| **Recuperación zero-shot (nuestro)** | **0.2715** | **0.408** |
+
 ## Números absolutos (cada uno en SU propio setup — referencia, no head-to-head)
 
 > No comparar columna a columna entre tablas (clases distintas).
@@ -154,11 +170,15 @@ Los HPs del piloto Mozilla **no se trasladan a ciegas**.
   elección principista de TriagerX; W_f=0.2 es el pico observado en test).
 
 ## Resumen
-Head-to-head a ~50 clases (sección 4): **nuestro DeBERTa-solo (0.225–0.232) ≥ el de
-TriagerX (0.189)**, y el sistema completo llega a **0.2397**, aún a ~9 pp de su
-0.328 — brecha **puramente arquitectónica** (su CBR ensemble ya vale 0.270). Lo que
-queda validado: (1) el entrenamiento NO es el cuello de botella (15→30 ép y len
-256→512 solo suben +0.75 pp); (2) un CBR más fuerte **reactiva** el aporte del IBR;
-(3) el aporte del IBR depende del **régimen** (fuerte con 17 devs activos, marginal
-a 50 clases de cola larga); (4) `contribution` **ayuda** en OpenJ9 y **daña** en
-Mozilla según la etiqueta.
+Head-to-head a ~50 clases: nuestro mejor sistema es el **CBR de recuperación
+zero-shot (Top-1 0.2715, MRR 0.408; sección 5)**, que **iguala el ensemble de 2
+transformers de TriagerX (0.270) sin entrenar nada** y supera tanto a su DeBERTa-solo
+(0.189) como a nuestro propio clasificador (0.2322). Lo validado: (1) el clasificador
+no es el camino — su entrenamiento da rendimientos decrecientes (15→30 ép y len
+256→512: +0.75 pp) y el **recuperador zero-shot lo supera de calle**; (2) en este
+régimen (cola larga, 51 clases) ni el fine-tuning del recuperador (triplet colapsa;
+MNRL mejora recall, no Top-1) ni el IBR suben el Top-1 — la recuperación semántica
+preentrenada es el techo práctico; (3) el aporte del IBR depende del **régimen**
+(fuerte con 17 devs, marginal a 50); (4) `contribution` **ayuda** en OpenJ9 y **daña**
+en Mozilla según la etiqueta. La distancia hasta su 0.328 es que **su** IBR sí ayuda
+a **su** ensemble; el nuestro no a 50 clases.
