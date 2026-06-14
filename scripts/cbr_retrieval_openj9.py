@@ -73,8 +73,11 @@ def main() -> None:
     p.add_argument("--lam", type=float, default=0.3)
     p.add_argument("--meta", default=None, help="parquet de created_at (para --decay)")
     p.add_argument("--finetune", action="store_true", help="afina el encoder con pérdida contrastiva (paso 2)")
-    p.add_argument("--epochs", type=int, default=2)
+    p.add_argument("--loss", choices=["mnrl", "triplet"], default="mnrl",
+                   help="mnrl=MultipleNegativesRanking (pares mismo-dev, estable); triplet=BatchAllTriplet (colapsa en datos chicos)")
+    p.add_argument("--epochs", type=int, default=1)
     p.add_argument("--ft-batch", type=int, default=32)
+    p.add_argument("--lr", type=float, default=2e-5, help="LR del fine-tuning (suave para no olvidar)")
     p.add_argument("--sweep", action="store_true", help="barre (k, τ) sobre los mismos embeddings")
     p.add_argument("--cpu", action="store_true")
     args = p.parse_args()
@@ -131,34 +134,55 @@ def main() -> None:
 
 def _finetune(model: SentenceTransformer, train: pd.DataFrame, train_cls: np.ndarray,
               C: int, args, device: str) -> None:
-    """Afina el encoder con BatchAllTripletLoss usando `owner` como etiqueta:
-    acerca bugs del mismo dev, aleja los de devs distintos.
+    """Afina el encoder para acercar bugs del mismo dev (API moderna ST 5.x, CUDA/fp16).
 
-    API moderna de ST 5.x (SentenceTransformerTrainer): usa CUDA + fp16 y agrupa el
-    batch por etiqueta (GROUP_BY_LABEL) para que se formen triplets válidos. El
-    model.fit() legacy corría en CPU (~69 s/it), por eso se evita."""
+    --loss mnrl (default): MultipleNegativesRankingLoss sobre pares (anchor, positive)
+      = dos bugs DISTINTOS del mismo dev; negativos in-batch (sampler NO_DUPLICATES).
+      Estándar para retrieval, estable y rápido.
+    --loss triplet: BatchAllTripletLoss con `owner` como etiqueta (GROUP_BY_LABEL);
+      colapsa el espacio en datasets chicos (verificado: 0.27→0.16), no recomendado."""
+    from collections import defaultdict
+
     from datasets import Dataset
     from sentence_transformers import (SentenceTransformerTrainer,
                                        SentenceTransformerTrainingArguments, losses)
     from sentence_transformers.training_args import BatchSamplers
 
-    logger.info("Fine-tuning contrastivo (CUDA/fp16): {} épocas, batch={}...",
-                args.epochs, args.ft_batch)
-    ds = Dataset.from_dict({"sentence": train["text"].tolist(),
-                            "label": [int(c) for c in train_cls]})
-    loss = losses.BatchAllTripletLoss(model=model)
-    targs = SentenceTransformerTrainingArguments(
+    common = dict(
         output_dir=str(settings.openj9_dir / "cbr_retrieval_ft_trainer"),
-        num_train_epochs=args.epochs,
-        per_device_train_batch_size=args.ft_batch,
-        warmup_ratio=0.1,
-        fp16=not args.cpu,
-        batch_sampler=BatchSamplers.GROUP_BY_LABEL,
-        dataloader_drop_last=True,
-        logging_steps=20,
-        save_strategy="no",
-        report_to="none",
+        num_train_epochs=args.epochs, per_device_train_batch_size=args.ft_batch,
+        learning_rate=args.lr, warmup_ratio=0.1, fp16=not args.cpu,
+        dataloader_drop_last=True, logging_steps=20, save_strategy="no", report_to="none",
     )
+
+    if args.loss == "triplet":
+        logger.info("Fine-tuning TRIPLET (CUDA/fp16): {} ép, batch={}, lr={}...",
+                    args.epochs, args.ft_batch, args.lr)
+        ds = Dataset.from_dict({"sentence": train["text"].tolist(),
+                                "label": [int(c) for c in train_cls]})
+        loss = losses.BatchAllTripletLoss(model=model)
+        targs = SentenceTransformerTrainingArguments(
+            batch_sampler=BatchSamplers.GROUP_BY_LABEL, **common)
+    else:  # mnrl
+        texts = train["text"].tolist()
+        by_dev: dict[int, list[int]] = defaultdict(list)
+        for i, c in enumerate(train_cls):
+            by_dev[int(c)].append(i)
+        rng = np.random.default_rng(settings.seed)
+        anchors, positives = [], []
+        for i, c in enumerate(train_cls):
+            others = [j for j in by_dev[int(c)] if j != i]
+            if not others:
+                continue  # devs con 1 solo bug: no forman par (siguen en el índice al inferir)
+            j = others[int(rng.integers(len(others)))]
+            anchors.append(texts[i]); positives.append(texts[j])
+        logger.info("Fine-tuning MNRL (CUDA/fp16): {} pares mismo-dev, {} ép, batch={}, lr={}...",
+                    len(anchors), args.epochs, args.ft_batch, args.lr)
+        ds = Dataset.from_dict({"anchor": anchors, "positive": positives})
+        loss = losses.MultipleNegativesRankingLoss(model=model)
+        targs = SentenceTransformerTrainingArguments(
+            batch_sampler=BatchSamplers.NO_DUPLICATES, **common)
+
     trainer = SentenceTransformerTrainer(model=model, args=targs, train_dataset=ds, loss=loss)
     trainer.train()
     logger.success("Fine-tuning terminado.")
