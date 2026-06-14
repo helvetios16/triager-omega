@@ -81,6 +81,14 @@ class Settings(BaseSettings):
     repo_branch: str = "master"
     repo_mine_since: str = "2021-01-01"  # alineado con el rango de Creation Time de los bugs
 
+    # --- Validación en OpenJ9 (dataset de TriagerX, etiqueta = fixer/owner) ---
+    # Permite probar el IBR "completo" (con `contribution` activo) en el régimen donde
+    # TriagerX brilla, y comparar Hit@K/MRR contra el paper. Ver docs/gecko-dev-mining-status.md.
+    triagerx_repo: Path = Path("/Users/sebastian/Documents/Python/triagerX")
+    openj9_gh_repo: str = "eclipse-openj9/openj9"  # owner/repo para la GitHub API
+    github_api_base: str = "https://api.github.com"
+    github_token: str = ""  # token de lectura pública; se lee de GITHUB_TOKEN en .env
+
     # --- Módulo 4: IBR (SBERT + decaimiento + Interaction Points, estilo TriagerX) ---
     # Valores alineados al triagerx_config.yaml real (máxima fidelidad a TriagerX).
     sbert_model: str = "sentence-transformers/all-mpnet-base-v2"
@@ -160,6 +168,29 @@ class Settings(BaseSettings):
     def ibr_bug_ids_path(self) -> Path:
         """Bug Ids alineados fila a fila con ibr_embeddings.npy."""
         return self.pilot_dir / "ibr_bug_ids.npy"
+
+    # ----- Rutas OpenJ9 (validación del IBR) -----
+    @property
+    def openj9_dir(self) -> Path:
+        return self.artifacts_dir / "openj9"
+
+    @property
+    def openj9_train_csv(self) -> Path:
+        return self.triagerx_repo / "assets" / "openj9_train_17.csv"
+
+    @property
+    def openj9_test_csv(self) -> Path:
+        return self.triagerx_repo / "assets" / "openj9_test_17.csv"
+
+    @property
+    def openj9_interactions_path(self) -> Path:
+        """Tabla larga (issue_number, dev, kind, timestamp) minada de la GitHub API."""
+        return self.openj9_dir / "openj9_interactions.parquet"
+
+    @property
+    def openj9_issue_meta_path(self) -> Path:
+        """(issue_number, created_at) — t_now de las queries y fecha del assignment."""
+        return self.openj9_dir / "openj9_issue_meta.parquet"
 
     # ----- Rutas a los parquets de entrada -----
     @property
