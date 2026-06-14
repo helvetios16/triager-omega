@@ -89,14 +89,45 @@ altos donde el Top-1 ya colapsó. Razón: a 50 clases el IBR es débil (0.169) y
 **correlacionado** con el CBR (ambos recuperan los mismos bugs similares), así que
 sumarlo añade ruido. Contrasta con el régimen de 17 devs, donde el IBR sí aportaba.
 
+## Validación cruzada en el piloto de Mozilla (régimen opuesto)
+
+Para comprobar que el diseño generaliza, lo corrimos en el piloto Mozilla (20 devs,
+etiqueta `contributor_id`/assignee, train 5842 / test 1615; `scripts/cbr_retrieval_pilot.py`).
+Régimen **opuesto** a OpenJ9: pocos devs muy activos, mucha data, accuracy alta.
+
+| Sistema (Mozilla, test) | Hit@1 | MRR | Hit@5 | Hit@10 |
+|---|---|---|---|---|
+| IBR-solo | 0.6755 | 0.786 | 0.914 | 0.944 |
+| Clasificador DeBERTa (entrenado, both) | 0.7319 | 0.832 | — | — |
+| **CBR-recuperación (zero-shot, k=20, τ=4)** | 0.7176 | 0.819 | 0.946 | 0.972 |
+| **CBR-recuperación + IBR (W_f=0.8)** | **0.7337** | **0.831** | 0.951 | 0.980 |
+| Clasificador + IBR (full, W_f=0.2) | 0.762 | — | — | — |
+
+**Dos hallazgos del contraste de regímenes:**
+
+1. **El ranking clasificador↔recuperación se invierte con el régimen.** En Mozilla
+   (pocas clases, mucha data) el clasificador entrenado gana por poco (0.732 vs
+   0.718, −1.4 pp); en OpenJ9 (51 clases, cola larga, poca data) el recuperador gana
+   (+4 pp). El recuperador es **competitivo en ambos sin entrenar**; brilla cuando la
+   cola es larga y la data escasa (donde un clasificador no aprende bien las clases raras).
+
+2. **El IBR SÍ aporta a la recuperación en Mozilla** (+1.6 pp Top-1, +1.2 pp MRR;
+   pico en W_f=0.8) y **no** en OpenJ9 a 50 clases. El valor de la fusión **sigue la
+   fuerza del IBR en cada régimen**: fuerte con pocos devs muy activos (IBR-solo 0.676,
+   cerca del CBR), despreciable en la cola larga (IBR-solo 0.169 ≪ CBR). Nota: el
+   recuperador pide W_f más alto que el clasificador (0.8 vs 0.2) — su NPS es menos
+   "picudo", así que tolera más empuje del IBR.
+
 ## Conclusión
 
-El **CBR-recuperación zero-shot (0.2715, MRR 0.408)** es el mejor sistema nuestro a
-50 clases: iguala el ensemble de TriagerX **sin entrenar**, con un diseño más simple
-e interpretable. La distancia hasta su full (0.328) viene de que **su** IBR sí ayuda
-a **su** ensemble, mientras que a 50 clases (cola larga) ni el fine-tuning ni el IBR
-suben nuestro Top-1 — la recuperación semántica preentrenada ya es el techo práctico
-en este régimen.
+El **CBR-recuperación** es un reemplazo propio, simple e interpretable del CBR de
+TriagerX, **competitivo en ambos regímenes sin entrenar**: iguala su ensemble de 2
+transformers en OpenJ9 (0.2715 vs 0.270) y queda a −1.4 pp del clasificador entrenado
+en Mozilla (0.718 vs 0.732). Su valor relativo y el del IBR **dependen del régimen**:
+en cola larga (OpenJ9) el recuperador supera al clasificador y el IBR no aporta; con
+pocos devs muy activos (Mozilla) el clasificador gana por poco y el IBR sí aporta
+(+1.6 pp). El fine-tuning no mejora el Top-1 en ninguno (la recuperación semántica
+preentrenada es el techo práctico).
 
 ## Reproducir (en omen, ver memoria ssh-windows-rtx5060)
 
