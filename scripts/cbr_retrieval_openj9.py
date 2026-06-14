@@ -132,18 +132,35 @@ def main() -> None:
 def _finetune(model: SentenceTransformer, train: pd.DataFrame, train_cls: np.ndarray,
               C: int, args, device: str) -> None:
     """Afina el encoder con BatchAllTripletLoss usando `owner` como etiqueta:
-    acerca bugs del mismo dev, aleja los de devs distintos."""
-    from sentence_transformers import InputExample, losses
-    from torch.utils.data import DataLoader
+    acerca bugs del mismo dev, aleja los de devs distintos.
 
-    logger.info("Fine-tuning contrastivo: {} épocas, batch={}...", args.epochs, args.ft_batch)
-    examples = [InputExample(texts=[t], label=int(c))
-                for t, c in zip(train["text"].tolist(), train_cls)]
-    loader = DataLoader(examples, shuffle=True, batch_size=args.ft_batch, drop_last=True)
+    API moderna de ST 5.x (SentenceTransformerTrainer): usa CUDA + fp16 y agrupa el
+    batch por etiqueta (GROUP_BY_LABEL) para que se formen triplets válidos. El
+    model.fit() legacy corría en CPU (~69 s/it), por eso se evita."""
+    from datasets import Dataset
+    from sentence_transformers import (SentenceTransformerTrainer,
+                                       SentenceTransformerTrainingArguments, losses)
+    from sentence_transformers.training_args import BatchSamplers
+
+    logger.info("Fine-tuning contrastivo (CUDA/fp16): {} épocas, batch={}...",
+                args.epochs, args.ft_batch)
+    ds = Dataset.from_dict({"sentence": train["text"].tolist(),
+                            "label": [int(c) for c in train_cls]})
     loss = losses.BatchAllTripletLoss(model=model)
-    warmup = int(len(loader) * args.epochs * 0.1)
-    model.fit(train_objectives=[(loader, loss)], epochs=args.epochs,
-              warmup_steps=warmup, show_progress_bar=True, use_amp=False)
+    targs = SentenceTransformerTrainingArguments(
+        output_dir=str(settings.openj9_dir / "cbr_retrieval_ft_trainer"),
+        num_train_epochs=args.epochs,
+        per_device_train_batch_size=args.ft_batch,
+        warmup_ratio=0.1,
+        fp16=not args.cpu,
+        batch_sampler=BatchSamplers.GROUP_BY_LABEL,
+        dataloader_drop_last=True,
+        logging_steps=20,
+        save_strategy="no",
+        report_to="none",
+    )
+    trainer = SentenceTransformerTrainer(model=model, args=targs, train_dataset=ds, loss=loss)
+    trainer.train()
     logger.success("Fine-tuning terminado.")
 
 
