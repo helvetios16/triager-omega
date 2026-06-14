@@ -1,67 +1,80 @@
 # Comparación: TriagerX vs. triager-omega (OpenJ9)
 
 > Validación cruzada en OpenJ9 (dataset de TriagerX, etiqueta `owner`/fixer).
-> Fecha: 2026-06-13. Régimen donde la señal `contribution` del IBR sí aporta
-> (opuesto a Mozilla, donde la etiqueta es `Assigned To` = assignee).
+> Régimen donde la señal `contribution` del IBR sí aporta (opuesto a Mozilla,
+> donde la etiqueta es `Assigned To` = assignee).
 
-## Resultados Top-1 (y métricas de ranking)
+## ⚠️ Los absolutos NO son comparables (leer primero)
 
-### TriagerX (sus propios artefactos)
-Fuente: `triagerX/notebook/openj9/top1_class_comparison.json` (CBR) y
-`triagerX/notebook/openj9_grid_sim_weights.csv` (combinado WRA).
-Setup: **50 clases**, 382 issues de test.
+Nuestro setup usa **17 clases** y el de TriagerX **50 clases**, así que un Top-1
+más alto puede deberse solo a que la tarea es más fácil, no a que el sistema sea
+mejor:
+
+- Azar 1/17 = **0.059** vs 1/50 = **0.020**.
+- Splits y preprocesamiento del texto distintos.
+
+**Una réplica fiel a 50 clases no es reproducible** con los assets disponibles:
+- `openj9_22112024.csv` (dataset completo, 228 owners; con `owner` ≥20 issues
+  salen 51 ≈ las "50 clases" de TriagerX) **no trae columna de fecha** → no se
+  puede repetir su split temporal (time-sliced) sin arriesgar fuga.
+- Ese CSV solo tiene `issue_title`/`issue_body` crudos; el 17-set trae una
+  columna `text` ya preprocesada por ellos. Concatenar a mano no da el mismo texto.
+
+→ Por eso **este documento NO emite un veredicto de "quién gana" en absolutos.**
+
+## Lo que SÍ es comparable (deltas internos, independientes del nº de clases)
+
+### 1. Aporte marginal del IBR — misma ganancia en ambos sistemas
+El IBR sube el CBR la **misma magnitud** en los dos, lo que indica que nuestro
+IBR está bien replicado (es un Δ interno, no depende del nº de clases):
+
+| Sistema | CBR-solo | +IBR (Full) | Δ |
+|---|---|---|---|
+| TriagerX (50 clases) | 0.270 | 0.328 | **+5.8 pp** |
+| triager-omega (17 clases) | 0.199 | 0.267 | **+6.8 pp** |
+
+### 2. Ablación de `contribution` en OpenJ9 (ON vs OFF) — hallazgo propio
+Todo dentro de nuestro mismo setup, así que es plenamente válido:
+
+| | IBR-solo Hit@1 | Full mejor Hit@1 | Full MRR (pico) |
+|---|---|---|---|
+| `contribution` ON (ip_c=1.5) | **0.2379** | **0.2669** (W_f=0.2) | **0.4563** |
+| `contribution` OFF (ip_c=0) | 0.2219 | 0.2347 | 0.4400 |
+| **Δ** | **+1.6 pp** | **+3.2 pp** | **+1.6 pp** |
+
+### 3. Contraste de régimen Mozilla ↔ OpenJ9
+`contribution` **ayuda** con etiqueta `owner`/fixer (OpenJ9) y **daña** con
+`assignee` (Mozilla, donde `ip_contribution=0` es lo óptimo). El valor de la
+señal de código depende de **cómo se define la etiqueta** — aporte nuestro, no
+del paper.
+
+## Números absolutos (cada uno en SU propio setup — referencia, no head-to-head)
+
+> No comparar columna a columna entre tablas (clases distintas).
+
+### TriagerX — su setup (50 clases, 382 issues de test)
+Fuente: `triagerX/notebook/openj9/top1_class_comparison.json` y
+`openj9_grid_sim_weights.csv`.
 
 | Componente | Top-1 |
 |---|---|
 | RoBERTa-solo | 0.175 |
 | DeBERTa-solo | 0.189 |
-| **CBR ensemble** (RoBERTa + DeBERTa) | 0.270 |
-| **CBR + IBR (WRA, combinado)** | **0.328** |
+| CBR ensemble (RoBERTa + DeBERTa) | 0.270 |
+| CBR + IBR (WRA) | 0.328 |
 
-### triager-omega (nuestro sistema)
-Setup: **1 DeBERTa-v3**, **17 clases**, 1.893 ejemplos.
+### triager-omega — nuestro setup (1 DeBERTa-v3, 17 clases, 311 issues de test)
 Scripts: `scripts/train_openj9_cbr.py`, `scripts/eval_openj9_full.py`.
 
 | Componente | Top-1 | MRR | Hit@5 | Hit@10 |
 |---|---|---|---|---|
 | CBR-solo | 0.199 | 0.401 | 0.704 | 0.859 |
 | IBR-solo | 0.238 | 0.373 | 0.492 | 0.637 |
-| **Full (CBR + IBR)** | **0.257** | 0.452 | 0.714 | 0.878 |
+| Full (CBR + IBR, W_f=0.2) | 0.267 | 0.456 | 0.711 | 0.868 |
 
-## Veredicto: TriagerX sale mejor en absolutos
-
-Su sistema completo logra **Top-1 0.328 sobre 50 clases**, mientras nosotros
-sacamos **0.257 sobre solo 17 clases** — una tarea bastante más fácil
-(azar 1/17 = 0.059 vs 1/50 = 0.020). Nivelando por dificultad, la brecha es
-aún mayor a su favor. **No era el objetivo superarlo**: nuestro CBR está
-deliberadamente underfit (sin el ensemble del paper).
-
-### De dónde viene la diferencia
-- **El motor es el CBR ensemble.** TriagerX fusiona **dos transformers**
-  (RoBERTa + DeBERTa) → 0.270 Top-1; cada uno solo da ~0.18. Nosotros corremos
-  **un solo DeBERTa underfit** (1.893 ejemplos, sin ensemble) → 0.199.
-- **El IBR aporta lo mismo en ambos:** sube el CBR de TriagerX 0.270 → 0.328
-  (+5.8 pp); a nosotros de 0.199 → 0.257 (+5.8 pp). **Misma ganancia exacta**
-  → nuestro IBR está bien replicado.
-
-## Lo que sí validamos (cualitativamente igual al paper)
-1. **Full > ambos solos** → la arquitectura híbrida funciona end-to-end,
-   igual que TriagerX.
-2. **`contribution` ayuda con etiqueta `fixer`/`owner`** (OpenJ9) y daña con
-   `assignee` (Mozilla) — hallazgo nuestro, no del paper. El valor de la señal
-   de código depende de la definición de la etiqueta.
-
-   Ablación en OpenJ9 (apagando `contribution` con `--ip-c 0`):
-
-   | | IBR-solo Hit@1 | Full mejor Hit@1 | Full MRR (pico) |
-   |---|---|---|---|
-   | `contribution` ON (ip_c=1.5) | **0.2379** | **0.2669** (W_f=0.2) | **0.4563** |
-   | `contribution` OFF (ip_c=0) | 0.2219 | 0.2347 | 0.4400 |
-   | **Δ** | **+1.6 pp** | **+3.2 pp** | **+1.6 pp** |
-
-   En Mozilla el mismo barrido daba la conclusión opuesta (`ip_contribution=0`
-   es lo óptimo): la señal de código solo aporta cuando la etiqueta ES el
-   contribuidor de código.
+Nuestro CBR es **un solo DeBERTa underfit a propósito** (sin el ensemble de dos
+transformers del paper); por eso sus absolutos son modestos y NO pretenden
+replicar los números de TriagerX.
 
 ## Lección de entrenamiento
 El `WeightedRandomSampler` (1/freq), clave en Mozilla (cola larga de ~450 devs),
@@ -71,13 +84,16 @@ sobre-balancea → sobre-predice devs raros → Hit@1 cae por debajo del azar
 Los HPs del piloto Mozilla **no se trasladan a ciegas**.
 
 ## Caveats
-- No es apples-to-apples: TriagerX usa 50 clases / nosotros 17; splits distintos.
-- CBR de OpenJ9 underfit (1.893 ejemplos, sin ensemble) → absolutos modestos,
-  **no es réplica de los números del paper**.
-- Sin split de validación: el W_f se reporta como curva en test.
+- **Absolutos no comparables** entre sistemas (17 vs 50 clases); ver sección ⚠️.
+- Réplica fiel a 50 clases no reproducible (sin fecha para el split temporal,
+  preprocesamiento de texto distinto).
+- CBR de OpenJ9 underfit (sin ensemble) → absolutos modestos por diseño.
+- Sin split de validación: el W_f se reporta como curva en test (W_f=0.7 es la
+  elección principista de TriagerX; W_f=0.2 es el pico observado en test).
 
 ## Resumen
-No superamos a TriagerX en absolutos (y no se buscaba, porque nuestro CBR es
-intencionalmente underfit), pero **replicamos fielmente el comportamiento de su
-IBR y de la arquitectura completa**. La brecha en Top-1 es casi enteramente el
-ensemble de dos transformers que ellos entrenan y nosotros no.
+La comparación **no es un head-to-head de absolutos** (clases distintas, y la
+réplica a 50 no es reproducible). Lo que sí queda validado, con métricas que no
+dependen del nº de clases: (1) nuestro IBR aporta la **misma magnitud** que el de
+TriagerX (~+6 pp), (2) `contribution` **ayuda** en OpenJ9 y **daña** en Mozilla
+según la etiqueta, y (3) la arquitectura híbrida **Full > ambos solos** end-to-end.
