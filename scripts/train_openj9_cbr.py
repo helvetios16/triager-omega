@@ -47,14 +47,19 @@ def main() -> None:
     p.add_argument("--no-weighted", action="store_true")
     p.add_argument("--cpu", action="store_true")
     p.add_argument("--seed", type=int, default=settings.seed)
+    # Permite apuntar a CSVs alternativos (p.ej. el set de 50 clases) sin pisar
+    # el modelo de 17: --train-csv/--test-csv + --out-name.
+    p.add_argument("--train-csv", default=None, help="CSV de train (default: config 17-set)")
+    p.add_argument("--test-csv", default=None, help="CSV de test (default: config 17-set)")
+    p.add_argument("--out-name", default="cbr_model", help="subcarpeta de salida en artifacts/openj9/")
     args = p.parse_args()
 
     import torch
     torch.manual_seed(args.seed)
 
     cfg = settings
-    train = pd.read_csv(cfg.openj9_train_csv).drop_duplicates("issue_number")
-    test = pd.read_csv(cfg.openj9_test_csv).drop_duplicates("issue_number")
+    train = pd.read_csv(args.train_csv or cfg.openj9_train_csv).drop_duplicates("issue_number")
+    test = pd.read_csv(args.test_csv or cfg.openj9_test_csv).drop_duplicates("issue_number")
     le = label_encoder(train, test)
     num_labels = len(le)
     logger.info("OpenJ9 CBR | train={} test={} clases(owner)={}", len(train), len(test), num_labels)
@@ -63,7 +68,7 @@ def main() -> None:
         df["text"] = df["text"].fillna("").astype(str)
         df["label"] = df["owner"].map(le).astype(int)
 
-    out_dir = cfg.openj9_dir / "cbr_model"
+    out_dir = cfg.openj9_dir / args.out_name
     out_dir.mkdir(parents=True, exist_ok=True)
 
     tokenizer = AutoTokenizer.from_pretrained(args.model)
