@@ -15,6 +15,25 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
+def _detect_torch_device() -> str:
+    """Autodetecta el acelerador: CUDA (RTX) > MPS (Apple) > CPU.
+
+    Evita el valor fijo "mps" que rompía SBERT/torch en equipos sin MPS
+    (p.ej. el Windows con RTX 5060). Override por env: TORCH_DEVICE=...
+    """
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            return "cuda"
+        mps = getattr(torch.backends, "mps", None)
+        if mps is not None and mps.is_available():
+            return "mps"
+    except Exception:
+        pass
+    return "cpu"
+
+
 class Settings(BaseSettings):
     """Configuración global del proyecto."""
 
@@ -51,7 +70,7 @@ class Settings(BaseSettings):
     grok_model: str = "grok-4.20-0309-non-reasoning"
     distill_max_comment_chars: int = 1500      # truncado del primer comentario en la entrada
     distill_max_tokens: int = 2048             # holgado; con think=False Gemma no genera preámbulo
-    torch_device: str = "mps"
+    torch_device: str = Field(default_factory=_detect_torch_device)
 
     # --- Piloto del CBR (subconjunto escala TriagerX para validar el diseño) ---
     pilot_n_devs: int = 20     # top-N devs más activos (TriagerX usó 17-41)
