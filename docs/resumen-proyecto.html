@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>triager-omega — Resumen del proyecto</title>
+<style>
+  :root{
+    --bg:#0f1420; --panel:#161d2e; --ink:#e8edf6; --muted:#9aa7bd;
+    --acc:#3b82f6; --ok:#22c55e; --warn:#f59e0b; --bad:#f43f5e; --pur:#a855f7;
+    --line:#33405a; --card:#1d2740;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    line-height:1.6;padding:32px 16px 72px;font-size:15px}
+  .wrap{max-width:980px;margin:0 auto}
+  h1{text-align:center;font-size:28px;margin:0 0 4px}
+  .sub{text-align:center;color:var(--muted);margin:0 0 8px;font-size:14px}
+  .pill{display:inline-block;background:#27324a;color:#aebfdc;font-size:11px;font-weight:600;
+    padding:3px 10px;border-radius:999px;margin:2px}
+  .pills{text-align:center;margin-bottom:30px}
+  section{background:var(--panel);border:1px solid var(--line);border-radius:14px;
+    padding:20px 22px 24px;margin:0 0 20px;box-shadow:0 8px 24px rgba(0,0,0,.2)}
+  h2{font-size:19px;margin:0 0 14px;display:flex;align-items:center;gap:9px}
+  h2 .n{background:var(--acc);color:#fff;font-size:13px;width:26px;height:26px;border-radius:8px;
+    display:inline-flex;align-items:center;justify-content:center;flex:none}
+  h3{font-size:15px;margin:18px 0 8px;color:#cdd8ee}
+  p{margin:0 0 10px}
+  .muted{color:var(--muted)}
+  table{width:100%;border-collapse:collapse;font-size:13.5px;margin:8px 0 4px}
+  th,td{padding:7px 10px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}
+  th{color:var(--muted);font-weight:600;font-size:12.5px;text-transform:uppercase;letter-spacing:.3px}
+  td.win{color:#86efac;font-weight:700}
+  .best td{background:#11241a}
+  code{font-family:"SF Mono",ui-monospace,Menlo,Consolas,monospace;font-size:12.5px;
+    background:#0c111c;border:1px solid var(--line);border-radius:5px;padding:1px 6px}
+  .steps{counter-reset:s;list-style:none;padding:0;margin:0}
+  .steps li{position:relative;padding:10px 0 10px 44px;border-bottom:1px dashed var(--line)}
+  .steps li:last-child{border-bottom:none}
+  .steps li::before{counter-increment:s;content:counter(s);position:absolute;left:0;top:9px;
+    width:28px;height:28px;border-radius:50%;background:var(--card);border:1px solid var(--acc);
+    color:#9cc4ff;font-weight:700;font-size:13px;display:flex;align-items:center;justify-content:center}
+  .steps b{color:var(--ink)}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  @media(max-width:680px){.grid2{grid-template-columns:1fr}}
+  .chain{background:var(--card);border-left:3px solid var(--warn);border-radius:8px;padding:12px 14px;margin:8px 0}
+  .chain b{color:var(--warn)}
+  .tagok{color:var(--ok)} .tagbad{color:var(--bad)} .tagwarn{color:var(--warn)}
+  .kpi{display:flex;gap:12px;flex-wrap:wrap;margin:6px 0 2px}
+  .kpi div{flex:1 1 150px;background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px 14px}
+  .kpi .v{font-size:22px;font-weight:800}
+  .kpi .l{font-size:11.5px;color:var(--muted);margin-top:2px}
+  .prob th:nth-child(1){width:30%}
+  ul.tight{margin:6px 0;padding-left:20px}
+  ul.tight li{margin:3px 0}
+  .foot{color:var(--muted);font-size:12px;text-align:center;margin-top:26px}
+  .accent{color:var(--bad);font-weight:700}
+  @media print{body{background:#fff;color:#000}section{box-shadow:none}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>triager-omega</h1>
+  <p class="sub">Recomendación de desarrolladores para bugs · resumen del trabajo hasta ahora (piloto)</p>
+  <div class="pills">
+    <span class="pill">CBR + IBR híbrido</span>
+    <span class="pill">DeBERTa-v3 · MPNet/SBERT</span>
+    <span class="pill">OpenJ9 + Mozilla</span>
+    <span class="pill">RTX 5060 vía SSH</span>
+    <span class="pill">uv · PyTorch CUDA 12.8</span>
+  </div>
+
+  <!-- 1. QUE ES -->
+  <section>
+    <h2><span class="n">1</span>Qué es el proyecto</h2>
+    <p>Sistema <b>híbrido de triaging</b>: dado un bug report, recomienda al desarrollador
+    más adecuado. Parte de la arquitectura de <b>TriagerX</b> (referencia) y combina dos señales,
+    fusionadas de forma aditiva <code>FS = NPS + W_f·NIS</code>:</p>
+    <ul class="tight">
+      <li><b>CBR</b> (contenido): qué dice el bug → quién suele resolver bugs parecidos.</li>
+      <li><b>IBR</b> (interacción): quién ha interactuado (commits, PRs, asignaciones, discusión) con bugs similares.</li>
+    </ul>
+    <p class="muted">El estado actual es un <b>piloto / proof-of-concept</b> para validar el diseño antes de la corrida oficial a escala.</p>
+  </section>
+
+  <!-- 2. QUE SE HIZO -->
+  <section>
+    <h2><span class="n">2</span>Qué se hizo (recorrido)</h2>
+    <ol class="steps">
+      <li><b>Infraestructura de entrenamiento.</b> Conexión SSH Mac → PC Windows con RTX 5060 (8&nbsp;GB); entorno CUDA 12.8 reproducible con <code>uv</code> + PyTorch <code>cu128</code>.</li>
+      <li><b>Replicación de TriagerX.</b> CBR clasificador (DeBERTa-v3) + IBR (interacciones tipadas) + agregador, validados en el piloto Mozilla (20 devs).</li>
+      <li><b>Validación cruzada en OpenJ9.</b> Comparación <b>justa a ~50 clases</b> (mismo nº de clases, mismo split temporal) frente a TriagerX.</li>
+      <li><b>Intento de mejora del clasificador.</b> Más épocas y más contexto → mejora marginal (rendimientos decrecientes).</li>
+      <li><b class="accent">Cambio de propuesta:</b> reemplazar el clasificador por un <b>CBR de recuperación (Case-Based Reasoning real)</b>: kNN sobre bugs pasados → voto al resolvedor.</li>
+      <li><b>Exploración de fine-tuning</b> del recuperador (triplet, MNRL) → no mejora el Top-1.</li>
+      <li><b>Fusión recuperación + IBR</b> en OpenJ9 y Mozilla → el aporte del IBR depende del régimen.</li>
+      <li><b>Documentación y diseño de la corrida oficial</b> (formato publicable) + diagramas.</li>
+    </ol>
+  </section>
+
+  <!-- 3. POR QUE LOS CAMBIOS -->
+  <section>
+    <h2><span class="n">3</span>El porqué del cambio de propuesta</h2>
+    <p>El giro de <b>mejorar el clasificador</b> a <b>reemplazarlo por recuperación de casos</b> no fue preferencia, sino una <b>cadena de hallazgos</b>:</p>
+    <div class="chain"><b>1.</b> Nuestro clasificador <b>igualó/superó</b> al modelo base de la referencia (0.225–0.232 vs 0.189) → el modelo base <b>no era la debilidad</b>.</div>
+    <div class="chain"><b>2.</b> Entrenar más (15→30 ép, 256→512 tok) dio solo <b>+0.75 pp</b> → el entrenamiento <b>no era el cuello de botella</b>.</div>
+    <div class="chain"><b>3.</b> La brecha hasta el sistema completo de la referencia era <b>arquitectónica</b> (su ensemble de 2 transformers, 0.270) → replicarlo no aportaba novedad.</div>
+    <div class="chain"><b>4.</b> Decisión: probar un paradigma distinto — <b>recuperación de casos</b>, más simple e interpretable.</div>
+    <div class="chain"><b>5.</b> Resultado: el recuperador <b>igualó al ensemble sin entrenar nada</b> (0.2715 vs 0.270) → cambio validado por evidencia.</div>
+    <p class="muted">El objetivo también se reencuadró: de <i>"superar a la referencia"</i> a <i>"competir con una arquitectura más simple e interpretable y caracterizar cuándo aporta cada señal"</i>.</p>
+  </section>
+
+  <!-- 4. QUE SE USO -->
+  <section>
+    <h2><span class="n">4</span>Qué se usó</h2>
+    <div class="grid2">
+      <div>
+        <h3>Modelos / IA</h3>
+        <ul class="tight">
+          <li><b>DeBERTa-v3-base</b> — CBR clasificador.</li>
+          <li><b>all-mpnet-base-v2 (SBERT)</b> — recuperador y encoder del IBR.</li>
+          <li><b>RoBERTa</b> — parte del ensemble de referencia.</li>
+          <li><b>LLM (Gemma vía Ollama)</b> — destilación del texto del bug.</li>
+        </ul>
+      </div>
+      <div>
+        <h3>Software</h3>
+        <ul class="tight">
+          <li>PyTorch CUDA 12.8 · HuggingFace Transformers</li>
+          <li>sentence-transformers 5.5.1 · datasets</li>
+          <li><code>uv</code> (gestor de paquetes) · pandas / numpy</li>
+          <li>GitHub API (minería de timelines del IBR)</li>
+        </ul>
+      </div>
+      <div>
+        <h3>Hardware</h3>
+        <ul class="tight">
+          <li><b>RTX 5060 8&nbsp;GB</b> (PC Windows "omen") vía SSH — entrenamiento.</li>
+          <li>Mac (MPS) — recuperación zero-shot y piloto Mozilla.</li>
+        </ul>
+      </div>
+      <div>
+        <h3>Datos</h3>
+        <ul class="tight">
+          <li><b>OpenJ9</b> (dataset de TriagerX) — etiqueta = resolvedor; 50 clases.</li>
+          <li><b>Mozilla</b> piloto — etiqueta = assignee; 20 devs, train 5842 / test 1615.</li>
+          <li>Interacciones minadas: 54.076 (OpenJ9, GitHub API).</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- 5. PROBLEMAS Y SOLUCIONES -->
+  <section>
+    <h2><span class="n">5</span>Problemas encontrados y cómo se resolvieron</h2>
+    <table class="prob">
+      <tr><th>Problema</th><th>Causa</th><th>Solución</th></tr>
+      <tr><td><b>DeBERTa-v3 colapsaba a azar</b></td><td>diverge con <code>bf16</code> (atención desenredada); grad_norm explota</td><td class="win">fp32 + <code>adam_eps=1e-4</code></td></tr>
+      <tr><td><b>Eval rompía en omen</b></td><td><code>.env</code> del Mac traía <code>TORCH_DEVICE=mps</code> → pisaba el autodetect</td><td class="win">fijar <code>TORCH_DEVICE=cuda</code> en omen</td></tr>
+      <tr><td><b>Fine-tuning lentísimo</b> (37 s/it)</td><td>thrashing de VRAM: 100% util pero 40&nbsp;W, memoria al tope de 8&nbsp;GB</td><td class="win"><code>--ft-batch 16 --max-seq-len 256</code></td></tr>
+      <tr><td><b>El recuperador afinado empeoraba</b></td><td><code>BatchAllTripletLoss</code> colapsa el espacio en datos chicos (0.27→0.16)</td><td class="win">usar <code>MNRL</code> / quedarse en zero-shot</td></tr>
+      <tr><td><b>Entrenamiento ST en CPU</b></td><td><code>model.fit()</code> legacy de ST 5.x no respeta el device (~69 s/it)</td><td class="win"><code>SentenceTransformerTrainer</code> (CUDA/fp16)</td></tr>
+      <tr><td><b>Comparación 17 vs 50 inválida</b></td><td>azar distinto (1/17=0.059 vs 1/50=0.020) → no comparable</td><td class="win">reconstruir set de 50 clases (split por issue_number)</td></tr>
+      <tr><td><b>WeightedSampler bajaba el Top-1</b></td><td>sobre-balancea en OpenJ9 (dataset chico/balanceado)</td><td class="win"><code>--no-weighted</code></td></tr>
+      <tr><td><b>SSH a Windows (cuenta admin)</b></td><td>clave va en <code>administrators_authorized_keys</code>; grupo "Administradores" (SID)</td><td class="win">detección por SID S-1-5-32-544</td></tr>
+    </table>
+  </section>
+
+  <!-- 6. HALLAZGOS -->
+  <section>
+    <h2><span class="n">6</span>Qué se encontró (hallazgos)</h2>
+    <ul class="tight">
+      <li><span class="tagok">▲</span> <b>Un recuperador congelado iguala a un ensemble de 2 transformers</b> entrenado, sin entrenar nada (OpenJ9: 0.2715 vs 0.270).</li>
+      <li><span class="tagwarn">⇄</span> <b>El ranking clasificador↔recuperación se invierte con el régimen:</b> el recuperador gana en cola larga (OpenJ9), el clasificador gana por poco con pocos devs y mucha data (Mozilla).</li>
+      <li><span class="tagwarn">⇄</span> <b>El IBR aporta solo cuando es fuerte:</b> sí en Mozilla (+1.6 pp), no en OpenJ9 a 50 clases (señal débil y correlacionada).</li>
+      <li><span class="tagbad">▼</span> <b>El fine-tuning no mejora el Top-1:</b> triplet colapsa el espacio; MNRL aprende pero solo mejora el recall (Hit@10).</li>
+      <li><span class="tagbad">▼</span> <b>El entrenamiento no es el cuello de botella:</b> más épocas/contexto → +0.75 pp.</li>
+      <li><span class="tagwarn">⇄</span> <b>La señal de código (contribution) ayuda o daña según la etiqueta:</b> ayuda con etiqueta=resolvedor (OpenJ9), daña con etiqueta=assignee (Mozilla).</li>
+    </ul>
+  </section>
+
+  <!-- 7. RESULTADOS -->
+  <section>
+    <h2><span class="n">7</span>Resultados (Top-1 en test)</h2>
+    <h3>OpenJ9 — 50 clases (head-to-head)</h3>
+    <table>
+      <tr><th>Sistema</th><th>Top-1</th><th>Nota</th></tr>
+      <tr><td>DeBERTa-solo (TriagerX)</td><td>0.189</td><td>su CBR base</td></tr>
+      <tr><td>Clasificador nuestro (mejor)</td><td>0.2322</td><td>30 ép / 512 tok</td></tr>
+      <tr><td>Ensemble 2 transformers (TriagerX)</td><td>0.270</td><td>su CBR completo</td></tr>
+      <tr class="best"><td class="win">CBR de recuperación (nuestro)</td><td class="win">0.2715</td><td>sin entrenar</td></tr>
+      <tr><td>Sistema completo TriagerX</td><td>0.328</td><td>ensemble + IBR</td></tr>
+    </table>
+    <h3>Mozilla — piloto 20 devs</h3>
+    <table>
+      <tr><th>Sistema</th><th>Top-1</th><th>MRR</th></tr>
+      <tr><td>IBR-solo</td><td>0.6755</td><td>0.786</td></tr>
+      <tr><td>CBR de recuperación (zero-shot)</td><td>0.7176</td><td>0.819</td></tr>
+      <tr><td>Clasificador entrenado</td><td>0.7319</td><td>0.832</td></tr>
+      <tr class="best"><td class="win">Recuperación + IBR (W_f=0.8)</td><td class="win">0.7337</td><td class="win">0.831</td></tr>
+      <tr><td>Clasificador + IBR (full)</td><td>0.762</td><td>—</td></tr>
+    </table>
+  </section>
+
+  <!-- 8. ESTADO Y RESUELTO -->
+  <section>
+    <h2><span class="n">8</span>Qué se resolvió y estado actual</h2>
+    <div class="kpi">
+      <div><div class="v tagok">✓</div><div class="l">Diseño validado en 2 regímenes opuestos</div></div>
+      <div><div class="v tagok">✓</div><div class="l">Aporte propio: CBR de recuperación competitivo sin entrenar</div></div>
+      <div><div class="v tagok">✓</div><div class="l">Pipeline reproducible (scripts + datos + docs)</div></div>
+    </div>
+    <p style="margin-top:12px"><b>Resuelto:</b> se confirmó que el cuello de botella no era el modelo ni el entrenamiento; se halló un CBR propio, simple e interpretable, que iguala al ensemble de la referencia; y se caracterizó cuándo aporta cada señal — todo respaldado con cifras y reproducible.</p>
+    <p class="muted"><b>Pendiente (corrida oficial):</b> escalar a 5–8 proyectos, añadir intervalos de confianza / tests, baseline TF-IDF+kNN, métricas de costo y análisis de errores — para llevarlo de piloto a estudio empírico publicable (ver <code>docs/diseno-corrida-oficial.md</code>).</p>
+  </section>
+
+  <p class="foot">triager-omega · resumen generado para la tesis · métricas = Top-1 (Hit@1) / MRR en test · detalle en docs/</p>
+</div>
+</body>
+</html>
