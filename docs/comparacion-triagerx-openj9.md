@@ -49,26 +49,59 @@ Todo dentro de nuestro mismo setup, así que es plenamente válido:
 señal de código depende de **cómo se define la etiqueta** — aporte nuestro, no
 del paper.
 
-### 4. Comparación JUSTA a ~50 clases (DeBERTa-solo vs DeBERTa-solo)
-Reconstruimos el set de ~50 clases desde `openj9_22112024.csv`: owners con ≥20
-issues (**51 clases**, azar 0.0196 ≈ el 0.020 de TriagerX), `text` en su formato
-exacto y split temporal por `issue_number` (train < 17695 / test ≥ 17695, igual
-que el 17-set). Train 3348 / test 534. Mismo modelo (1 DeBERTa-v3), 15 épocas,
-`--no-weighted`. Esto SÍ es head-to-head de absolutos (misma arquitectura, mismas
-clases, mismo split).
+### 4. Comparación JUSTA a ~50 clases (head-to-head de absolutos)
+Reconstruimos el set de ~50 clases desde `openj9_22112024.csv`
+(`scripts/build_openj9_50.py`): owners con ≥20 issues (**51 clases**, azar 0.0196 ≈
+el 0.020 de TriagerX), `text` en su formato exacto y split temporal por
+`issue_number` (train < 17695 / test ≥ 17695, igual que el 17-set). Train 3348 /
+test 534. Esto SÍ es head-to-head de absolutos (mismas clases, mismo split).
+
+Para el sistema completo a 50 clases minamos los timelines de los 3882 issues vía
+GitHub API (`mine_openj9_timelines.py --out-suffix _50`): **54.076 interacciones**
+(discussion 33.781, commits 11.670, PR 7.194, assignment 1.431).
+
+**4.a — CBR-solo (DeBERTa-solo vs DeBERTa-solo).** Mismo modelo (1 DeBERTa-v3):
 
 | Componente (50 clases) | Top-1 | Nota |
 |---|---|---|
 | RoBERTa-solo (TriagerX) | 0.175 | |
 | DeBERTa-solo (TriagerX) | 0.189 | |
-| **DeBERTa-solo (nosotros)** | **0.2247** | un solo transformer, MRR 0.359 |
+| **DeBERTa-solo (nosotros, 15ép/len256)** | **0.2247** | MRR 0.359 |
+| **DeBERTa-solo (nosotros, 30ép/len512)** | **0.2322** | MRR 0.361 |
 | CBR ensemble RoBERTa+DeBERTa (TriagerX) | 0.270 | 2 transformers |
 | CBR + IBR full (TriagerX) | 0.328 | ensemble + IBR |
 
-**Nuestro DeBERTa-solo (0.225) ≥ el DeBERTa-solo de TriagerX (0.189)** en igualdad
-de condiciones → nuestro modelo base no es la debilidad. La brecha hasta su 0.328
-es **arquitectónica** (ensemble de 2 transformers + IBR), no de calidad del CBR.
-La loss seguía bajando (3.95 → 3.29), así que 0.225 probablemente no es el techo.
+**Nuestro DeBERTa-solo (0.225–0.232) ≥ el DeBERTa-solo de TriagerX (0.189)** en
+igualdad de condiciones → nuestro modelo base no es la debilidad. La brecha hasta
+su 0.328 es **arquitectónica** (ensemble de 2 transformers + IBR), no de calidad
+del CBR.
+
+**4.b — Sistema completo CBR+IBR a 50 clases (con el CBR 30ép/len512).**
+
+| Sistema (50 clases) | Top-1 | MRR | Hit@5 | Hit@10 |
+|---|---|---|---|---|
+| CBR-solo | 0.2322 | 0.3614 | 0.4850 | 0.6124 |
+| IBR-solo | 0.1685 | 0.2853 | 0.4101 | 0.4944 |
+| **Full W_f=0.2 (pico Top-1)** | **0.2397** | **0.3735** | 0.5075 | 0.6348 |
+| Full W_f=0.7 (default TriagerX) | 0.2004 | ~0.351 | 0.5262 | 0.6629 |
+| **CBR+IBR full (TriagerX)** | **0.328** | — | — | — |
+
+El sistema completo llega a **0.2397** (W_f=0.2), aún a **~9 pp** de su 0.328. Esa
+brecha es la misma de siempre: su CBR *ensemble* ya vale 0.270 por sí solo, más de
+lo que alcanza un único DeBERTa por bien entrenado que esté.
+
+**4.c — El entrenamiento NO es el cuello de botella (rendimientos decrecientes).**
+Subir 15→30 épocas y `max_length` 256→512 movió el CBR-solo solo **+0.75 pp**
+(0.2247 → 0.2322) y bajó un poco Hit@5/10. Confirma que el límite es la **capacidad
+del modelo único**, no el entrenamiento. El único lever que cierra la brecha de
+verdad es replicar el **ensemble** (RoBERTa+DeBERTa).
+
+**4.d — Hallazgo: un CBR más fuerte REACTIVA el aporte del IBR.** Con el CBR base
+(15ép/256) el IBR no aportaba nada a Top-1 (el pico del Full = CBR-solo, 0.2247);
+con el CBR mejor entrenado (30ép/512) el IBR vuelve a sumar (0.2322 → **0.2397** en
+W_f=0.2). A 50 clases (cola larga de devs) el IBR-solo es más débil que el CBR
+(0.169 < 0.232) y solo ayuda en pesos bajos; contrasta con el régimen de 17 devs,
+donde el IBR-solo era *más fuerte* que el CBR (0.238 > 0.199) y aportaba +6.8 pp.
 
 > Una primera corrida a 6 épocas daba 0.11 (infraentrenada, loss casi plana); el
 > salto a 0.225 con 15 épocas confirma que la brecha inicial era entrenamiento, no
@@ -110,16 +143,22 @@ sobre-balancea → sobre-predice devs raros → Hit@1 cae por debajo del azar
 Los HPs del piloto Mozilla **no se trasladan a ciegas**.
 
 ## Caveats
-- **Absolutos no comparables** entre sistemas (17 vs 50 clases); ver sección ⚠️.
-- Réplica fiel a 50 clases no reproducible (sin fecha para el split temporal,
-  preprocesamiento de texto distinto).
-- CBR de OpenJ9 underfit (sin ensemble) → absolutos modestos por diseño.
+- Los absolutos del **17-set** NO son comparables con TriagerX (17 vs 50 clases);
+  para el head-to-head usar el **50-set** reconstruido (sección 4).
+- Réplica a 50 clases **comparable, no idéntica**: la selección exacta de devs
+  difiere (owners con ≥20 issues → 51 vs sus 50); el split temporal se aproxima con
+  `issue_number`.
+- Brecha hasta 0.328 = **ensemble** (RoBERTa+DeBERTa) que no replicamos, no calidad
+  del CBR (nuestro DeBERTa-solo ≥ el suyo).
 - Sin split de validación: el W_f se reporta como curva en test (W_f=0.7 es la
   elección principista de TriagerX; W_f=0.2 es el pico observado en test).
 
 ## Resumen
-La comparación **no es un head-to-head de absolutos** (clases distintas, y la
-réplica a 50 no es reproducible). Lo que sí queda validado, con métricas que no
-dependen del nº de clases: (1) nuestro IBR aporta la **misma magnitud** que el de
-TriagerX (~+6 pp), (2) `contribution` **ayuda** en OpenJ9 y **daña** en Mozilla
-según la etiqueta, y (3) la arquitectura híbrida **Full > ambos solos** end-to-end.
+Head-to-head a ~50 clases (sección 4): **nuestro DeBERTa-solo (0.225–0.232) ≥ el de
+TriagerX (0.189)**, y el sistema completo llega a **0.2397**, aún a ~9 pp de su
+0.328 — brecha **puramente arquitectónica** (su CBR ensemble ya vale 0.270). Lo que
+queda validado: (1) el entrenamiento NO es el cuello de botella (15→30 ép y len
+256→512 solo suben +0.75 pp); (2) un CBR más fuerte **reactiva** el aporte del IBR;
+(3) el aporte del IBR depende del **régimen** (fuerte con 17 devs activos, marginal
+a 50 clases de cola larga); (4) `contribution` **ayuda** en OpenJ9 y **daña** en
+Mozilla según la etiqueta.
