@@ -32,8 +32,8 @@ from triager_omega.modules.aggregator import rank_metrics
 from triager_omega.modules.ibr import InteractionRecommender
 
 
-def _interaction_table(cfg: Settings, issue_ids: set[int]) -> dict:
-    inter = pd.read_parquet(cfg.openj9_interactions_path)
+def _interaction_table(inter_path, issue_ids: set[int]) -> dict:
+    inter = pd.read_parquet(inter_path)
     inter = inter[inter["issue_number"].isin(issue_ids)].dropna(subset=["timestamp"])
     table: dict[int, list] = defaultdict(list)
     for n, dev, kind, ts in inter[["issue_number", "dev", "kind", "timestamp"]].itertuples(
@@ -48,15 +48,20 @@ def run(args: argparse.Namespace) -> None:
         ibr_top_k_retrieve=args.top_k, ibr_tau=args.tau, ibr_lambda=args.lam,
         ip_contribution=args.ip_c, ip_assignment=args.ip_a, ip_discussion=args.ip_d,
     )
-    cbr_dir = cfg.openj9_dir / "cbr_model"
+    cbr_dir = cfg.openj9_dir / args.cbr_name
     if not (cbr_dir / "label_encoder.json").exists():
         raise SystemExit(f"No existe el CBR en {cbr_dir}. Corre antes scripts/train_openj9_cbr.py.")
     le: dict[str, int] = json.loads((cbr_dir / "label_encoder.json").read_text())
     num_classes = len(le)
     device = "cpu" if args.cpu else cfg.torch_device
 
-    train = pd.read_csv(cfg.openj9_train_csv).drop_duplicates("issue_number")
-    test = pd.read_csv(cfg.openj9_test_csv).drop_duplicates("issue_number")
+    from pathlib import Path
+    train_csv = Path(args.train_csv) if args.train_csv else cfg.openj9_train_csv
+    test_csv = Path(args.test_csv) if args.test_csv else cfg.openj9_test_csv
+    inter_path = Path(args.interactions) if args.interactions else cfg.openj9_interactions_path
+    meta_path = Path(args.meta) if args.meta else cfg.openj9_issue_meta_path
+    train = pd.read_csv(train_csv).drop_duplicates("issue_number")
+    test = pd.read_csv(test_csv).drop_duplicates("issue_number")
     train["text"] = train["text"].fillna("").astype(str)
     test["text"] = test["text"].fillna("").astype(str)
     true_idx = test["owner"].map(le).to_numpy().astype(int)
@@ -83,8 +88,8 @@ def run(args: argparse.Namespace) -> None:
     emb = ibr._sbert().encode(train["text"].tolist(), batch_size=64,
                               convert_to_numpy=True, normalize_embeddings=True, show_progress_bar=False)
     ibr._train_embeddings = torch.as_tensor(emb, dtype=torch.float32)
-    ibr._interactions = _interaction_table(cfg, set(int(n) for n in ibr._train_bug_ids))
-    meta = (pd.read_parquet(cfg.openj9_issue_meta_path)
+    ibr._interactions = _interaction_table(inter_path, set(int(n) for n in ibr._train_bug_ids))
+    meta = (pd.read_parquet(meta_path)
             .drop_duplicates("issue_number").set_index("issue_number")["created_at"])
     q = ibr._sbert().encode(test["text"].tolist(), batch_size=64,
                             convert_to_numpy=True, normalize_embeddings=True, show_progress_bar=False)
@@ -120,6 +125,12 @@ def main() -> None:
     p.add_argument("--ip-d", type=float, default=0.1)
     p.add_argument("--max-length", type=int, default=256)
     p.add_argument("--cpu", action="store_true")
+    # Set alternativo (50 clases): CBR/CSVs/interacciones propios sin pisar el 17-set.
+    p.add_argument("--cbr-name", default="cbr_model", help="subcarpeta del CBR en artifacts/openj9/")
+    p.add_argument("--train-csv", default=None)
+    p.add_argument("--test-csv", default=None)
+    p.add_argument("--interactions", default=None, help="parquet de interacciones (default: config)")
+    p.add_argument("--meta", default=None, help="parquet de meta/created_at (default: config)")
     run(p.parse_args())
 
 

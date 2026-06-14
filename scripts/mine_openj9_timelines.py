@@ -47,12 +47,12 @@ from loguru import logger
 from triager_omega.config import settings
 
 
-def _issue_numbers(cfg=settings) -> list[int]:
-    """Issues únicos del subset de 17 devs (train + test)."""
+def _issue_numbers(train_csv, test_csv) -> list[int]:
+    """Issues únicos del subset (train + test) de los CSV dados."""
     nums: set[int] = set()
-    for csv in (cfg.openj9_train_csv, cfg.openj9_test_csv):
+    for csv in (train_csv, test_csv):
         if not csv.exists():
-            raise FileNotFoundError(f"No existe {csv}. ¿Está el repo TriagerX en {cfg.triagerx_repo}?")
+            raise FileNotFoundError(f"No existe {csv}. ¿Está el repo TriagerX en {settings.triagerx_repo}?")
         nums.update(int(n) for n in pd.read_csv(csv)["issue_number"].dropna().unique())
     return sorted(nums)
 
@@ -171,6 +171,12 @@ def _to_rows(raw: dict) -> tuple[list[dict], dict]:
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--smoke", type=int, default=None, help="solo los primeros N issues (prueba)")
+    # Permite minar un set alternativo (p.ej. el de 50 clases) sin pisar las parquet del
+    # 17-set. El caché crudo por-issue (artifacts/openj9/raw/{n}.json) SÍ se comparte:
+    # los issues ya bajados del 17-set no se vuelven a descargar.
+    p.add_argument("--train-csv", default=None, help="CSV de train (default: config 17-set)")
+    p.add_argument("--test-csv", default=None, help="CSV de test (default: config 17-set)")
+    p.add_argument("--out-suffix", default="", help="sufijo de salida, p.ej. '_50' → openj9_interactions_50.parquet")
     args = p.parse_args()
 
     cfg = settings
@@ -185,7 +191,13 @@ def main() -> None:
     raw_dir = cfg.openj9_dir / "raw"
     raw_dir.mkdir(parents=True, exist_ok=True)
 
-    issues = _issue_numbers(cfg)
+    from pathlib import Path
+    train_csv = Path(args.train_csv) if args.train_csv else cfg.openj9_train_csv
+    test_csv = Path(args.test_csv) if args.test_csv else cfg.openj9_test_csv
+    inter_out = cfg.openj9_dir / f"openj9_interactions{args.out_suffix}.parquet"
+    meta_out = cfg.openj9_dir / f"openj9_issue_meta{args.out_suffix}.parquet"
+
+    issues = _issue_numbers(train_csv, test_csv)
     if args.smoke:
         issues = issues[: args.smoke]
     logger.info("Minando {} issues de {}...", len(issues), cfg.openj9_gh_repo)
@@ -214,11 +226,11 @@ def main() -> None:
     meta = pd.DataFrame(meta_rows)
     meta["created_at"] = pd.to_datetime(meta["created_at"], utc=True, errors="coerce")
 
-    inter.to_parquet(cfg.openj9_interactions_path, index=False)
-    meta.to_parquet(cfg.openj9_issue_meta_path, index=False)
+    inter.to_parquet(inter_out, index=False)
+    meta.to_parquet(meta_out, index=False)
 
     logger.success("Escrito {} ({} interacciones) y {} ({} issues)",
-                   cfg.openj9_interactions_path, len(inter), cfg.openj9_issue_meta_path, len(meta))
+                   inter_out, len(inter), meta_out, len(meta))
     logger.info("kinds: {}", inter["kind"].value_counts().to_dict())
 
 

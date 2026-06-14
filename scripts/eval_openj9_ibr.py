@@ -41,8 +41,8 @@ def _label_encoder(train: pd.DataFrame, test: pd.DataFrame) -> dict[str, int]:
     return {o: i for i, o in enumerate(owners)}
 
 
-def _interaction_table(cfg: Settings, issue_ids: set[int]) -> dict:
-    inter = pd.read_parquet(cfg.openj9_interactions_path)
+def _interaction_table(inter_path, issue_ids: set[int]) -> dict:
+    inter = pd.read_parquet(inter_path)
     inter = inter[inter["issue_number"].isin(issue_ids)].dropna(subset=["timestamp"])
     table: dict[int, list] = defaultdict(list)
     for n, dev, kind, ts in inter[["issue_number", "dev", "kind", "timestamp"]].itertuples(
@@ -58,14 +58,19 @@ def run(args: argparse.Namespace) -> dict:
         ibr_top_k_retrieve=args.top_k, ibr_tau=args.tau, ibr_lambda=args.lam,
         ip_contribution=args.ip_c, ip_assignment=args.ip_a, ip_discussion=args.ip_d,
     )
-    if not cfg.openj9_interactions_path.exists():
+    from pathlib import Path
+    train_csv = Path(args.train_csv) if args.train_csv else cfg.openj9_train_csv
+    test_csv = Path(args.test_csv) if args.test_csv else cfg.openj9_test_csv
+    inter_path = Path(args.interactions) if args.interactions else cfg.openj9_interactions_path
+    meta_path = Path(args.meta) if args.meta else cfg.openj9_issue_meta_path
+    if not inter_path.exists():
         raise SystemExit(
-            f"No existe {cfg.openj9_interactions_path}. Corre primero "
+            f"No existe {inter_path}. Corre primero "
             "`uv run python scripts/mine_openj9_timelines.py` (con GITHUB_TOKEN)."
         )
 
-    train = pd.read_csv(cfg.openj9_train_csv).drop_duplicates("issue_number")
-    test = pd.read_csv(cfg.openj9_test_csv).drop_duplicates("issue_number")
+    train = pd.read_csv(train_csv).drop_duplicates("issue_number")
+    test = pd.read_csv(test_csv).drop_duplicates("issue_number")
     le = _label_encoder(train, test)
     logger.info("OpenJ9 | train={} test={} devs(owner)={}", len(train), len(test), len(le))
 
@@ -79,10 +84,10 @@ def run(args: argparse.Namespace) -> dict:
         convert_to_numpy=True, normalize_embeddings=True, show_progress_bar=True,
     )
     ibr._train_embeddings = torch.as_tensor(emb, dtype=torch.float32)
-    ibr._interactions = _interaction_table(cfg, set(int(n) for n in ibr._train_bug_ids))
+    ibr._interactions = _interaction_table(inter_path, set(int(n) for n in ibr._train_bug_ids))
 
     meta = (
-        pd.read_parquet(cfg.openj9_issue_meta_path)
+        pd.read_parquet(meta_path)
         .drop_duplicates("issue_number").set_index("issue_number")["created_at"]
     )
 
@@ -128,6 +133,10 @@ def main() -> None:
     p.add_argument("--ip-c", type=float, default=1.5, help="ip_contribution (commit/PR)")
     p.add_argument("--ip-a", type=float, default=0.5, help="ip_assignment")
     p.add_argument("--ip-d", type=float, default=0.1, help="ip_discussion")
+    p.add_argument("--train-csv", default=None)
+    p.add_argument("--test-csv", default=None)
+    p.add_argument("--interactions", default=None, help="parquet de interacciones (default: config)")
+    p.add_argument("--meta", default=None, help="parquet de meta/created_at (default: config)")
     run(p.parse_args())
 
 
