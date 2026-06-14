@@ -51,6 +51,18 @@ deliberadamente underfit (sin el ensemble del paper).
    `assignee` (Mozilla) — hallazgo nuestro, no del paper. El valor de la señal
    de código depende de la definición de la etiqueta.
 
+   Ablación en OpenJ9 (apagando `contribution` con `--ip-c 0`):
+
+   | | IBR-solo Hit@1 | Full mejor Hit@1 | Full MRR (pico) |
+   |---|---|---|---|
+   | `contribution` ON (ip_c=1.5) | **0.2379** | **0.2669** (W_f=0.2) | **0.4563** |
+   | `contribution` OFF (ip_c=0) | 0.2219 | 0.2347 | 0.4400 |
+   | **Δ** | **+1.6 pp** | **+3.2 pp** | **+1.6 pp** |
+
+   En Mozilla el mismo barrido daba la conclusión opuesta (`ip_contribution=0`
+   es lo óptimo): la señal de código solo aporta cuando la etiqueta ES el
+   contribuidor de código.
+
 ## Lección de entrenamiento
 El `WeightedRandomSampler` (1/freq), clave en Mozilla (cola larga de ~450 devs),
 es **contraproducente en OpenJ9** (17 devs activos, dataset chico y balanceado):
