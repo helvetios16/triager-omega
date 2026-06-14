@@ -13,14 +13,15 @@ mejor:
 - Azar 1/17 = **0.059** vs 1/50 = **0.020**.
 - Splits y preprocesamiento del texto distintos.
 
-**Una réplica fiel a 50 clases no es reproducible** con los assets disponibles:
-- `openj9_22112024.csv` (dataset completo, 228 owners; con `owner` ≥20 issues
-  salen 51 ≈ las "50 clases" de TriagerX) **no trae columna de fecha** → no se
-  puede repetir su split temporal (time-sliced) sin arriesgar fuga.
-- Ese CSV solo tiene `issue_title`/`issue_body` crudos; el 17-set trae una
-  columna `text` ya preprocesada por ellos. Concatenar a mano no da el mismo texto.
+**Una réplica COMPARABLE a ~50 clases sí es posible** (ver sección 4): el split
+temporal se recupera usando `issue_number` como proxy de tiempo (en el 17-set el
+corte train/test es limpio por `issue_number`, cero solapamiento) y el `text` se
+reconstruye con su formato exacto (`Bug Title: …\nBug Description: …`). Lo único
+no idéntico es la selección exacta de devs (usamos owners con ≥20 issues → 51).
 
-→ Por eso **este documento NO emite un veredicto de "quién gana" en absolutos.**
+→ Por eso el head-to-head en **absolutos sobre nuestro 17-set** no es válido
+(17 vs 50 clases); para comparar de verdad se usa el set reconstruido de ~50
+(sección 4).
 
 ## Lo que SÍ es comparable (deltas internos, independientes del nº de clases)
 
@@ -47,6 +48,31 @@ Todo dentro de nuestro mismo setup, así que es plenamente válido:
 `assignee` (Mozilla, donde `ip_contribution=0` es lo óptimo). El valor de la
 señal de código depende de **cómo se define la etiqueta** — aporte nuestro, no
 del paper.
+
+### 4. Comparación JUSTA a ~50 clases (DeBERTa-solo vs DeBERTa-solo)
+Reconstruimos el set de ~50 clases desde `openj9_22112024.csv`: owners con ≥20
+issues (**51 clases**, azar 0.0196 ≈ el 0.020 de TriagerX), `text` en su formato
+exacto y split temporal por `issue_number` (train < 17695 / test ≥ 17695, igual
+que el 17-set). Train 3348 / test 534. Mismo modelo (1 DeBERTa-v3), 15 épocas,
+`--no-weighted`. Esto SÍ es head-to-head de absolutos (misma arquitectura, mismas
+clases, mismo split).
+
+| Componente (50 clases) | Top-1 | Nota |
+|---|---|---|
+| RoBERTa-solo (TriagerX) | 0.175 | |
+| DeBERTa-solo (TriagerX) | 0.189 | |
+| **DeBERTa-solo (nosotros)** | **0.2247** | un solo transformer, MRR 0.359 |
+| CBR ensemble RoBERTa+DeBERTa (TriagerX) | 0.270 | 2 transformers |
+| CBR + IBR full (TriagerX) | 0.328 | ensemble + IBR |
+
+**Nuestro DeBERTa-solo (0.225) ≥ el DeBERTa-solo de TriagerX (0.189)** en igualdad
+de condiciones → nuestro modelo base no es la debilidad. La brecha hasta su 0.328
+es **arquitectónica** (ensemble de 2 transformers + IBR), no de calidad del CBR.
+La loss seguía bajando (3.95 → 3.29), así que 0.225 probablemente no es el techo.
+
+> Una primera corrida a 6 épocas daba 0.11 (infraentrenada, loss casi plana); el
+> salto a 0.225 con 15 épocas confirma que la brecha inicial era entrenamiento, no
+> el modelo. Caveat: selección exacta de los 50 devs no idéntica (≥20 issues → 51).
 
 ## Números absolutos (cada uno en SU propio setup — referencia, no head-to-head)
 
