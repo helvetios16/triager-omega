@@ -171,6 +171,45 @@ preentrenada de MPNet ya es casi óptima** para recuperar casos:
   que mejora es el **recall@k** (Hit@10 0.729 vs 0.669 a igual `max_seq_len=256`),
   no el acierto Top-1.
 
+### Más palancas zero-training probadas (ninguna sube el Top-1)
+
+Como el fine-tuning del encoder no movía el Top-1, probamos **mejoras alrededor del
+encoder** (sin entrenar nada), implementadas en `cbr_retrieval_openj9.py` con los flags
+`--vote`, `--hybrid`, `--rerank`. Baseline dense = k=50, τ=2, 384 tok.
+
+| Palanca | Mejor config | Top-1 | Hit@10 | MRR | Veredicto |
+|---|---|---|---|---|---|
+| **Baseline** (dense MPNet) | k=50 τ=2 | **0.2715** | 0.678 | 0.408 | — |
+| **Normalización del voto** (`--vote`) | idf | 0.2472 | 0.667 | 0.387 | ❌ todas peor que `sum` |
+| **Híbrido BM25+MPNet, RRF** (`--hybrid`) | k=30 τ=1 | **0.2715** | **0.700** | 0.408 | ➖ empata Top-1, **+2.2 pp Hit@10** |
+| **Cross-encoder re-rank** (`--rerank`) | k=50 τ=1 | 0.2678 | 0.674 | 0.407 | ❌ −0.4 pp |
+
+Detalle de cada hallazgo:
+
+- **Normalización del voto (`sum`/`mean`/`max`/`idf`/`rank`):** el `sum` (baseline) gana.
+  Penalizar a los devs frecuentes (mean 0.047, idf 0.247, max 0.159, rank 0.193) **empeora**
+  → en cola larga el *base-rate* de un dev prolífico es **señal real**, no solo sesgo.
+  La intuición "el voto-suma favorece injustamente a los activos" es **falsa** en este régimen.
+- **Híbrido léxico+semántico (BM25 + MPNet por Reciprocal Rank Fusion):** la idea era que
+  los tokens técnicos exactos (nombres de clase, códigos de error) que el coseno difumina
+  ayudaran en la cola larga. Resultado: **empata el Top-1** (0.2715) y **sube el recall**
+  (Hit@10 0.678→0.700). Mismo patrón que el fine-tuning MNRL: mejora *recall@k*, no *Top-1*.
+- **Cross-encoder re-rank** (recupera top-50 con MPNet → reordena con
+  `ms-marco-MiniLM-L6-v2`): **no ayuda** (−0.4 pp). Por qué: el cross-encoder optimiza
+  *relevancia textual query↔bug*, pero la tarea es predecir el **dev**, no el bug más
+  parecido. El bug más relevante textualmente no lo resolvió necesariamente el dev correcto;
+  el voto-suma sobre muchos vecinos ya agrega mejor esa señal débil que afinar la relevancia
+  de cada par. (Gotcha de infra: los bug reports traen logs enormes → hay que recortar el
+  texto a ~2000 chars antes de tokenizar o el cross-encoder hace thrashing; corre en omen/CUDA.)
+
+**Conclusión (refuerza la tesis):** el Top-1 de **0.2715 es un techo robusto** en este
+régimen. Ni entrenar el encoder, ni normalizar el voto, ni el híbrido léxico, ni el
+cross-encoder lo mueven. El límite **no es la sofisticación del método** sino la
+**información disponible**: con 51 clases y cola larga, la señal de similitud semántica
+satura el acierto Top-1 cerca de 0.27. Lo único mejorable es el **recall** (Hit@10, vía
+híbrido o MNRL). Esto es coherente con que la brecha hasta el 0.328 de TriagerX sea
+**arquitectónica** (su ensemble + IBR), no del recuperador.
+
 ### Sistema completo: CBR-recuperación + IBR
 
 | Sistema (50 clases) | Top-1 | MRR | Hit@10 |
@@ -302,6 +341,11 @@ uv run python scripts/cbr_retrieval_openj9.py \
 # fine-tuning (no mejora Top-1; MNRL es el estable):
 uv run python scripts/cbr_retrieval_openj9.py ... --finetune --loss mnrl --epochs 1
 
+# mejoras zero-training (ninguna sube Top-1, ver tabla de ablaciones):
+uv run python scripts/cbr_retrieval_openj9.py ... --top-k 50 --tau 2 --vote-sweep   # normalización del voto
+uv run python scripts/cbr_retrieval_openj9.py ... --hybrid --sweep                   # BM25+MPNet por RRF (+recall)
+uv run python scripts/cbr_retrieval_openj9.py ... --rerank --rerank-n 50 --sweep     # cross-encoder (omen/CUDA)
+
 # sistema completo (CBR-recuperación + IBR):
 uv run python scripts/eval_openj9_full.py --cbr-mode retrieval \
   --train-csv ...train_50.csv --test-csv ...test_50.csv \
@@ -311,3 +355,10 @@ uv run python scripts/eval_openj9_full.py --cbr-mode retrieval \
 **Gotcha (8 GB):** afinar con batch grande o `max_seq_len` alto satura la VRAM →
 GPU al 100 % util pero ~40 W (thrashing, no cómputo). Usar `--ft-batch 16
 --max-seq-len 256`. Requiere el paquete `datasets` (en `pyproject`).
+
+**Gotcha (cross-encoder):** en MPS revienta la memoria con muchos pares → el script lo
+corre en CPU automáticamente (lento). En omen/CUDA hay que **liberar la GPU** de MPNet
+antes (el script ya hace `del model` + `empty_cache`) y **recortar el texto a ~2000 chars**
+antes de tokenizar (los bug reports traen logs gigantes que el tokenizer procesa enteros
+antes de truncar a 256 tokens → degradación a >80 s/batch). Con eso corre en segundos.
+Requiere `rank-bm25` para `--hybrid` (en `pyproject`).
