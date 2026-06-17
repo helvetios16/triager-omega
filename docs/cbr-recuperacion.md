@@ -202,13 +202,19 @@ Detalle de cada hallazgo:
   de cada par. (Gotcha de infra: los bug reports traen logs enormes → hay que recortar el
   texto a ~2000 chars antes de tokenizar o el cross-encoder hace thrashing; corre en omen/CUDA.)
 
-**Conclusión (refuerza la tesis):** el Top-1 de **0.2715 es un techo robusto** en este
-régimen. Ni entrenar el encoder, ni normalizar el voto, ni el híbrido léxico, ni el
-cross-encoder lo mueven. El límite **no es la sofisticación del método** sino la
-**información disponible**: con 51 clases y cola larga, la señal de similitud semántica
-satura el acierto Top-1 cerca de 0.27. Lo único mejorable es el **recall** (Hit@10, vía
-híbrido o MNRL). Esto es coherente con que la brecha hasta el 0.328 de TriagerX sea
-**arquitectónica** (su ensemble + IBR), no del recuperador.
+**Conclusión (refuerza la tesis):** en **OpenJ9** el Top-1 de **0.2715 es un techo robusto**.
+Ni entrenar el encoder, ni normalizar el voto, ni el híbrido léxico, ni el cross-encoder lo
+mueven. El límite **no es la sofisticación del método** sino la **información disponible**:
+con 51 clases y cola larga, la señal de similitud semántica satura el acierto Top-1 cerca de
+0.27. Lo único mejorable es el **recall** (Hit@10, vía híbrido o MNRL). Coherente con que la
+brecha hasta el 0.328 de TriagerX sea **arquitectónica** (su ensemble + IBR), no del recuperador.
+
+> ⚠️ **Esto es específico de OpenJ9.** En **TypeScript** (código denso, identificadores
+> exactos) el **híbrido BM25+MPNet SÍ sube el Top-1 +3.1 pp** y el cross-encoder +1.3 pp
+> (ver §"Validación en TypeScript"). El valor de cada palanca zero-training **depende del
+> régimen/dominio**: la idea léxica (BM25) que es neutra en la prosa de OpenJ9 es decisiva
+> en el código de TS. La lección de la tesis no es "nada mejora", sino "**qué** mejora
+> **dónde**".
 
 ### Sistema completo: CBR-recuperación + IBR
 
@@ -319,12 +325,61 @@ Régimen **opuesto** a OpenJ9: pocos devs muy activos, mucha data, accuracy alta
    recuperador pide W_f más alto que el clasificador (0.8 vs 0.2) — su NPS es menos
    "picudo", así que tolera más empuje del IBR.
 
+## Validación en TypeScript (TS, el otro dataset de TriagerX)
+
+TriagerX usa **dos** datasets propios: OpenJ9 y **TypeScript (TS)**. Corrimos sobre los
+**split files reales de TriagerX** (`df_train_ts.csv`/`df_test_ts.csv`, train 9831 / test
+1115 tras dedup, **40 devs**, azar 0.025) → comparación **head-to-head** exacta. Régimen:
+40 clases pero **top-heavy** (los 3 devs top con ~1100 issues c/u) y, sobre todo,
+**contenido denso en identificadores** (nombres de tipos, símbolos de API, códigos `TS####`,
+snippets de código).
+
+| Sistema (TS, test 1115) | Top-1 | MRR | Hit@10 | Nota |
+|---|---|---|---|---|
+| TriagerX IBR | 0.278 | — | — | su IBR (TS = interacciones esporádicas) |
+| RoBERTa-Large+FCN (mejor baseline de TriagerX) | 0.319 | — | — | un solo PLM |
+| **TriagerX CBR (ensemble RoBERTa+DeBERTa)** | **0.324** | — | — | entrenado |
+| TriagerX full (CBR+IBR) | 0.353 | — | — | ensemble + IBR |
+| Nuestro CBR-recuperación **dense** (k=20 τ=4) | 0.2915 | 0.432 | 0.729 | zero-shot |
+| Nuestro CBR-recuperación + **cross-encoder** (k=30 τ=4) | 0.3049 | 0.447 | 0.744 | zero-shot |
+| **Nuestro CBR-recuperación HÍBRIDO BM25+MPNet** (k=50 τ=2) | **0.3229** | **0.470** | 0.773 | **zero-shot** |
+
+**Hallazgos:**
+
+1. **El híbrido BM25+MPNet es decisivo aquí (+3.1 pp): 0.2915 → 0.3229**, lo que **iguala
+   prácticamente el CBR ensemble entrenado de TriagerX** (0.324) y **supera a su mejor
+   baseline de un solo PLM** (RoBERTa-FCN 0.319, DeBERTa-FCN 0.264) — **sin entrenar**.
+   Por qué aquí sí y en OpenJ9 no: los issues de TypeScript están **llenos de tokens
+   técnicos exactos** que el coseno semántico difumina y BM25 captura por coincidencia
+   literal. La señal léxica es **dependiente del dominio**.
+2. **El cross-encoder sí ayuda un poco en TS** (+1.3 pp, 0.3049) — al revés que en OpenJ9
+   (−0.4 pp) —, pero **menos que el híbrido**. Y **rerankear sobre el híbrido lo empeora**
+   (0.306): el cross-encoder reordena por relevancia textual y **pisa** la ganancia léxica.
+3. **La normalización `idf` empata/supera levemente a `sum`** (0.2915 vs 0.2888) — opuesto
+   a OpenJ9, donde `idf` perdía. Coherente: TS es top-heavy, así que **penalizar a los
+   pocos devs dominantes** ayuda un poco (en la cola larga de OpenJ9, ese base-rate era señal).
+4. La brecha hasta el full de TriagerX (0.353) sigue siendo **su IBR** (+2.9 pp sobre su CBR);
+   nosotros aún no fusionamos IBR en TS (las interacciones de TS son esporádicas → el propio
+   paper reporta IBR débil, 0.278).
+
+**Síntesis de los 3 regímenes** (nuestro mejor recuperador zero-shot vs el CBR entrenado de
+TriagerX): en los tres queda **a ≤1.5 pp** de su ensemble entrenado **sin entrenar nada**.
+
+| Dataset | Régimen | Nuestro mejor (zero-shot) | TriagerX CBR (entrenado) | Δ | Palanca que ayuda |
+|---|---|---|---|---|---|
+| OpenJ9 | 51 cls, cola larga, prosa | 0.2715 (dense) | 0.270 | **+0.2** | ninguna (techo) |
+| TypeScript | 40 cls, top-heavy, código | 0.3229 (híbrido) | 0.324 | −0.1 | **híbrido BM25** |
+| Mozilla piloto | 20 cls, denso | 0.7176 (dense) | 0.7319 (clasif.) | −1.4 | (IBR en fusión) |
+
 ## Conclusión
 
 El **CBR-recuperación** es un reemplazo propio, simple e interpretable del CBR de
-TriagerX, **competitivo en ambos regímenes sin entrenar**: iguala su ensemble de 2
-transformers en OpenJ9 (0.2715 vs 0.270) y queda a −1.4 pp del clasificador entrenado
-en Mozilla (0.718 vs 0.732). Su valor relativo y el del IBR **dependen del régimen**:
+TriagerX, **competitivo en los tres regímenes sin entrenar** (queda a ≤1.5 pp del CBR
+entrenado de TriagerX en OpenJ9, TypeScript y Mozilla). En OpenJ9 iguala su ensemble de 2
+transformers (0.2715 vs 0.270); en TypeScript el **híbrido BM25+MPNet** lo lleva a 0.3229 ≈
+su 0.324; en Mozilla queda a −1.4 pp del clasificador entrenado. Las palancas zero-training
+**dependen del dominio** (el híbrido léxico es neutro en OpenJ9 pero decisivo en el código
+de TS). Su valor relativo y el del IBR **dependen del régimen**:
 en cola larga (OpenJ9) el recuperador supera al clasificador y el IBR no aporta; con
 pocos devs muy activos (Mozilla) el clasificador gana por poco y el IBR sí aporta
 (+1.6 pp). El fine-tuning no mejora el Top-1 en ninguno (la recuperación semántica
@@ -341,10 +396,15 @@ uv run python scripts/cbr_retrieval_openj9.py \
 # fine-tuning (no mejora Top-1; MNRL es el estable):
 uv run python scripts/cbr_retrieval_openj9.py ... --finetune --loss mnrl --epochs 1
 
-# mejoras zero-training (ninguna sube Top-1, ver tabla de ablaciones):
+# mejoras zero-training (efecto DEPENDE del dataset, ver tablas):
 uv run python scripts/cbr_retrieval_openj9.py ... --top-k 50 --tau 2 --vote-sweep   # normalización del voto
-uv run python scripts/cbr_retrieval_openj9.py ... --hybrid --sweep                   # BM25+MPNet por RRF (+recall)
+uv run python scripts/cbr_retrieval_openj9.py ... --hybrid --sweep                   # BM25+MPNet por RRF (decisivo en TS)
 uv run python scripts/cbr_retrieval_openj9.py ... --rerank --rerank-n 50 --sweep     # cross-encoder (omen/CUDA)
+
+# dataset TS de TriagerX (head-to-head; df_*_ts.csv del repo triagerX):
+uv run python scripts/cbr_retrieval_openj9.py \
+  --train-csv ../triagerX/df_train_ts.csv --test-csv ../triagerX/df_test_ts.csv \
+  --max-seq-len 384 --hybrid --sweep      # campeón TS: híbrido k=50 τ=2 → 0.3229
 
 # sistema completo (CBR-recuperación + IBR):
 uv run python scripts/eval_openj9_full.py --cbr-mode retrieval \
