@@ -24,6 +24,104 @@ clasificador no razona por casos. Nuestro CBR sí:
 discusión/asignación) con encoder **congelado**; el CBR-recuperación vota la
 **etiqueta de resolución** (owner) y el encoder es **afinable**.
 
+## Por qué MPNet (motivación del encoder)
+
+El encoder elegido es **`all-mpnet-base-v2`**, y la elección es deliberada:
+
+1. **Es el mismo encoder que ya usa TriagerX → comparación justa (apples-to-apples).**
+   El paper de TriagerX usa `all-mpnet-base-v2` para recuperar issues similares en su
+   **IBR** (no en su CBR; su CBR es el ensemble clasificador DeBERTa+RoBERTa). Cita
+   textual del paper: *"TriagerX IBR uses the pre-trained SBERT model all-mpnet-base-v2
+   for embedding generation without requiring task-specific fine-tuning, chosen for its
+   superior accuracy over other models. Detailed comparisons between these models are
+   not provided as they are not the focus of our research."* Al construir nuestro
+   CBR-recuperación con **el mismo encoder** (`config.sbert_model`), garantizamos que la
+   mejora viene del **método** (recuperar casos y votar al `owner`) y **no de un embedder
+   más potente** — se elimina ese confound.
+
+2. **Es un SBERT: el objetivo de entrenamiento correcto para recuperar.** MPNet en su
+   variante `sentence-transformers` está entrenado con objetivo siamés/contrastivo para
+   que **el coseno entre embeddings refleje similitud semántica** — justo lo que necesita
+   un recuperador. El embedding `[CLS]` de DeBERTa/RoBERTa (lo que alimenta el clasificador
+   de TriagerX) **no** está entrenado para que el coseno signifique algo: sirve para
+   clasificar, no para recuperar por similitud.
+
+3. **Off-the-shelf, sin fine-tuning → simple, interpretable, reproducible.** Encaja con
+   la tesis de un reemplazo que funciona **zero-shot** (y confirmamos que afinarlo no
+   mejora el Top-1).
+
+4. **Frente a las demás propuestas.** La ablación de encoders era `{MiniLM, MPNet}`;
+   MiniLM es el hermano rápido/pequeño (menor calidad) y MPNet el de mejor calidad general
+   de la familia (768 dim). Sumado al punto 1 (es el que ya validó el baseline), no había
+   razón para desviarse.
+
+> **Matiz clave para la tesis:** TriagerX usa MPNet **solo para recuperar issues en su
+> IBR** y nunca lo conecta a la recomendación de developer (eso lo hace con su ensemble
+> clasificador). Nuestro aporte es **reutilizar ese mismo recuperador MPNet para la tarea
+> de CBR** — votar al resolvedor de los casos similares — fijando el encoder para que la
+> comparación sea justa.
+
+### Qué prueba (y qué no prueba) TriagerX sobre el encoder de su CBR
+
+Revisando el paper, **TriagerX nunca prueba SBERT/MPNet como encoder del CBR, ni explica
+por qué no lo usa ahí.** Es un hueco que nuestro CBR-recuperación llena.
+
+**Lo que SÍ prueban (RQ3, RQ4, Tabla VI):** sus ablaciones del CBR comparan **solo
+encoders de tipo clasificador** (variantes base de BERT / RoBERTa / DeBERTa / CodeBERT)
+con cabezas CNN vs FCN.
+- Tabla VI / RQ4: *"all combinations yield comparable results... the RoBERTa- and
+  DeBERTa-base pair consistently achieved slightly better performance, and thus, we adopt
+  them as the default encoders."* → eligen RoBERTa+DeBERTa porque rinde un poco mejor
+  **entre combinaciones de PLMs clasificadores**.
+- RQ3 (Fig. 6 y 7): RoBERTa-b y DeBERTa-b solos rinden parecido; el **ensemble** los
+  supera por "ortogonalidad" (cada PLM acierta casos distintos). Toda la ganancia de su
+  CBR es el **ensemble**, no el encoder individual.
+
+**Lo que NO prueban:** MPNet/SBERT **nunca aparece como encoder del CBR** — solo en el
+IBR. No hay ni un experimento que compare "recuperación con SBERT" contra "clasificador"
+para recomendar developer. Y sobre MPNet en sí dicen explícitamente: *"Detailed
+comparisons between these models are not provided as they are not the focus of our
+research"* (ni siquiera lo justifican empíricamente; es elección por defecto).
+
+**Razón de fondo:** TriagerX **encuadró el CBR como clasificación desde el principio**
+(embeddings PLM → clasificador CNN/FCN) y reservó SBERT para "buscar issues parecidos" en
+el IBR. Nunca cruzaron los dos. **Esa comparación — recuperación vs. clasificador para
+recomendar developer — es la que falta en el paper y la que aporta nuestro CBR-recuperación.**
+
+> **Su propio paper admite la debilidad que el recuperador resuelve.** En el análisis de
+> errores de RQ1: *"...we identified **dataset imbalance** as a key issue, with some
+> developers having far more contributions than others. **This bias leads the model to
+> favor more active developers, resulting in poorer performance for those with fewer
+> contributions.**"* Es exactamente la debilidad de cola larga del clasificador (ver
+> sección siguiente): el propio TriagerX reconoce el problema, pero no probó la solución
+> obvia (recuperar en vez de clasificar) porque su SBERT estaba "encerrado" en el IBR.
+
+### ¿El CBR-recuperación y el IBR comparten encoder → es redundante el IBR?
+
+Comparten el **mismo encoder MPNet y el mismo paso de recuperación** (top-k por coseno),
+pero **no son redundantes por definición**: difieren en **qué hacen con los vecinos**.
+
+- **CBR-recuperación** vota la **etiqueta de resolución** (`owner`, quién *arregló* el bug).
+- **IBR** recorre el **grafo de interacciones tipadas** de esos mismos vecinos (quién hizo
+  commit / PR / discusión / asignación), ponderado por tipo y tiempo.
+
+Son señales distintas extraídas de los mismos casos. **Pero**, justamente porque ambos
+parten de la misma recuperación MPNet, tienden a estar **correlacionados**, y el valor
+marginal del IBR **depende del régimen** (lo medimos):
+
+- **OpenJ9, 50 clases (cola larga):** el IBR es débil (0.169) y correlacionado con el CBR
+  → sumarlo añade ruido y baja el Top-1. Aquí el IBR es **prácticamente redundante** → se
+  puede prescindir de él y quedarse con el CBR-recuperación solo.
+- **Mozilla (pocos devs muy activos):** el IBR es fuerte (0.676, cerca del CBR) y aporta
+  señal **complementaria** → la fusión sí mejora (+1.6 pp Top-1, W_f=0.8). Aquí el IBR
+  **no es redundante**.
+
+Conclusión: compartir el encoder **no** vuelve redundante al IBR en principio (extraen
+señales diferentes), pero **sí** lo vuelve redundante *en la práctica* cuando la señal de
+interacción es débil/correlacionada (cola larga). Bonus de ingeniería: como ambos usan los
+mismos embeddings MPNet, la **matriz de embeddings y el índice de vecinos se computan una
+sola vez** y se comparten entre módulos.
+
 ## Resultados (OpenJ9, 50 clases, train 3348 / test 534)
 
 ### Campeón: zero-shot, MPNet a 384 tokens, k=50, τ=2
@@ -88,6 +186,70 @@ solo; todo W_f los baja). El IBR solo sube un poco Hit@10 (0.678→0.706) a peso
 altos donde el Top-1 ya colapsó. Razón: a 50 clases el IBR es débil (0.169) y está
 **correlacionado** con el CBR (ambos recuperan los mismos bugs similares), así que
 sumarlo añade ruido. Contrasta con el régimen de 17 devs, donde el IBR sí aportaba.
+
+## Por qué el recuperador gana en cola larga
+
+Es el corazón del argumento: **un clasificador y un recuperador "gastan" la
+información de entrenamiento de formas distintas, y la cola larga castiga a uno y no
+al otro.**
+
+### El régimen
+
+En OpenJ9 a 50 clases hay ~3348 bugs de train repartidos entre 51 devs, pero **muy
+desigualmente**: unos pocos resuelven cientos y la mayoría apenas 20–40 (el umbral de
+corte). Es una cola larga: pocas clases ricas, muchas clases pobres.
+
+### Por qué el clasificador sufre
+
+Un clasificador softmax tiene que **aprender una frontera de decisión por cada clase**,
+y para eso necesita ver suficientes ejemplos de esa clase:
+
+- Las **filas finales de la matriz de pesos** (los devs raros) se entrenan con 20–40
+  ejemplos — no alcanza para aprender "cómo es un bug de este dev".
+- El **gradiente de cross-entropy está dominado por las clases frecuentes**: el modelo
+  minimiza la pérdida total acertando a los devs ricos e ignorando a los pobres. (Por
+  eso el `WeightedRandomSampler` 1/freq fue clave en el piloto — es un parche a este
+  sesgo.)
+- Las clases raras quedan **infrarrepresentadas en el espacio de salida**; el
+  clasificador casi nunca las predice aunque el bug sea suyo.
+
+Se ve en los números: el clasificador entrenado se queda en 0.2322 incluso con 30
+épocas y `max_length` 512, y subir 15→30 épocas solo movió **+0.75 pp**
+(rendimientos decrecientes). No es falta de entrenamiento; es que **no hay suficientes
+ejemplos por clase rara para aprender una frontera**.
+
+### Por qué el recuperador no sufre
+
+El recuperador **no aprende una frontera por clase** — no tiene parámetros por dev.
+Solo mide similitud semántica (con MPNet, ya entrenado, que sabe de lenguaje general,
+no de tus devs) y mira **quién resolvió los bugs parecidos**. La consecuencia:
+
+- **Un dev raro necesita un solo caso parecido para ser recuperable.** Si resolvió 1
+  bug de "memory leak en el GC" y llega otro de GC, entra al top-k. No necesitó 200
+  ejemplos para "aprender la clase" — le bastó **un vecino**.
+- La capacidad del recuperador **no se reparte entre clases**. Cada bug de train es un
+  "caso" independiente que sirve por igual sin importar si su dev es rico o pobre; no
+  hay un presupuesto de parámetros que las clases ricas acaparen.
+- El encoder es **fijo y general**: la calidad de la similitud no depende de cuántos
+  bugs tenga cada dev. Un bug raro se embebe igual de bien que uno común.
+
+### La intuición en una línea
+
+> El clasificador necesita **densidad por clase** (muchos ejemplos de cada dev) para
+> aprender; el recuperador solo necesita **un vecino cercano**. La cola larga te da
+> exactamente lo contrario de densidad por clase: mata al clasificador y deja
+> indiferente al recuperador.
+
+### Por qué se invierte en Mozilla
+
+Esto también explica por qué en Mozilla el clasificador **vuelve a ganar** (0.732 vs
+0.718): son 20 devs muy activos con mucha data cada uno → **alta densidad por clase**.
+El clasificador tiene los ejemplos para aprender fronteras nítidas, y una frontera bien
+aprendida supera a "votar vecinos" cuando hay datos de sobra. El recuperador sigue
+siendo competitivo, pero pierde su ventaja porque la condición que lo favorecía (clases
+pobres) desapareció. **No es que un método sea mejor en absoluto: el régimen de datos
+decide cuál gana** — y el recuperador domina justo donde el triaje real es más difícil
+(cola larga, devs nuevos o poco frecuentes), sin reentrenar.
 
 ## Validación cruzada en el piloto de Mozilla (régimen opuesto)
 
