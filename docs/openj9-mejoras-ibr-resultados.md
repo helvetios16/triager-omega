@@ -132,6 +132,31 @@ Es la primera config donde activar el IBR **no cuesta Top-1 y sí mejora el rank
 
 ---
 
+## Extra (b) — las mejoras sobre el full del CLASIFICADOR
+
+Verificación: ¿las palancas (léxico + gate) también ayudan sobre la otra base, el
+**CBR-clasificador** DeBERTa (30ép/len512, base 0.2397 con IBR semántico)? Sí — y más.
+
+| Config (clasificador, 50 clases) | Top-1 | MRR |
+|---|---|---|
+| CBR-clasificador solo | 0.2322 | 0.361 |
+| Baseline: full IBR semántico (W_f=0.2) | 0.2397 | 0.3735 |
+| Full IBR **léxico** (gate off, W_f=0.3) | 0.2509 | **0.3799** |
+| **Full léxico + gate=0.1** (W_f=0.3, ~57% consultas) | **0.2566** | 0.3792 |
+
+**Hallazgo.** El léxico+gate sube el Top-1 del clasificador a **0.2566**: **+2.44 pp
+sobre su CBR-solo** y **+1.69 pp sobre el full semántico viejo** (0.2397). El IBR
+aporta *más* aquí que sobre el recuperador (donde solo igualaba el techo) porque el
+clasificador es una **base más débil y menos saturada**, con más margen.
+
+**Pero el absoluto sigue por debajo del recuperador:** 0.2566 (clasificador mejorado)
+< **0.2715** (recuperador solo) < 0.328 (TriagerX full). Las mejoras generalizan y
+validan el mecanismo, pero el techo más bajo del clasificador lo deja por debajo del
+recuperador. El recuperador sigue siendo la mejor base. Log:
+`artifacts/openj9/eval_full_50_classifier_p1p3_lexical_gate.log`.
+
+---
+
 ## Resumen de las tres palancas
 
 | Palanca | Top-1 | MRR | Veredicto |
