@@ -43,6 +43,47 @@ def _interaction_table(inter_path, issue_ids: set[int]) -> dict:
     return dict(table)
 
 
+def _rrf_rank_term(mat: np.ndarray, k: int) -> np.ndarray:
+    """Reciprocal rank por elemento: 1/(k + rango), rango por fila desc de `mat`."""
+    ranks = np.empty_like(mat, dtype=np.float64)
+    order = np.argsort(-mat, axis=1)
+    rows = np.arange(mat.shape[0])[:, None]
+    ranks[rows, order] = np.arange(mat.shape[1])[None, :]
+    return 1.0 / (k + ranks + 1.0)
+
+
+def _gate_mask(nps: np.ndarray, gate: float | None) -> np.ndarray:
+    """Máscara [N,1] (mejora 3): 1 si el CBR está INSEGURO (margen top1−top2 < gate),
+    si no 0. Con None → todo 1 (sin gating). El NPS llega minmax por fila (top1=1)."""
+    if gate is None:
+        return np.ones((nps.shape[0], 1), dtype=np.float32)
+    part = np.partition(-nps, 1, axis=1)
+    top1, top2 = -part[:, 0], -part[:, 1]
+    uncertain = (top1 - top2) < gate  # CBR dudoso → deja entrar al IBR
+    return uncertain.astype(np.float32)[:, None]
+
+
+def _make_fuser(nps: np.ndarray, nis: np.ndarray, mode: str, rrf_k: int,
+                gate: float | None = None):
+    """Devuelve `fuse(wf) -> [N, C]` según el modo de fusión (mejoras 2 y 3).
+
+    - linear: FS = NPS + wf·NIS (suma de scores; amplifica el orden si están
+      correlacionados → el ruido del IBR arrastra el Top-1).
+    - rrf: FS = rr(NPS) + wf·rr(NIS), donde rr = 1/(k+rango). Solo usa el ORDEN
+      (robusto a escalas) y el término del IBR se enmascara a los devs con señal
+      (NIS>0), así un candidato sin interacciones no recibe crédito espurio.
+    - gate (mejora 3): el término del IBR se aplica SOLO en las consultas donde el
+      CBR está inseguro (margen top1−top2 < gate); donde el CBR es confiable, FS=NPS
+      puro → preserva los Top-1 correctos y deja que el IBR solo desempate dudas.
+    """
+    gmask = _gate_mask(nps, gate)
+    if mode == "rrf":
+        rr_nps = _rrf_rank_term(nps, rrf_k)
+        rr_nis = _rrf_rank_term(nis, rrf_k) * (nis > 0)  # IBR habla solo con señal
+        return lambda wf: rr_nps + wf * rr_nis * gmask
+    return lambda wf: nps + wf * nis * gmask
+
+
 def run(args: argparse.Namespace) -> None:
     cfg = Settings(
         ibr_top_k_retrieve=args.top_k, ibr_tau=args.tau, ibr_lambda=args.lam,
@@ -100,39 +141,91 @@ def run(args: argparse.Namespace) -> None:
         nps = normalize_rows(np.concatenate(logits, 0), how="minmax")
 
     # ---------- IBR → NIS [N, C] ----------
-    logger.info("IBR: embebiendo train + scoring NIS (IP C/A/D={}/{}/{})...",
-                args.ip_c, args.ip_a, args.ip_d)
+    logger.info("IBR (canal={}): scoring NIS (IP C/A/D={}/{}/{})...",
+                args.ibr_channel, args.ip_c, args.ip_a, args.ip_d)
     ibr = InteractionRecommender(cfg=cfg)
     ibr._active = set(le)
     ibr._train_bug_ids = train["issue_number"].to_numpy()
-    emb = ibr._sbert().encode(train["text"].tolist(), batch_size=64,
-                              convert_to_numpy=True, normalize_embeddings=True, show_progress_bar=False)
-    ibr._train_embeddings = torch.as_tensor(emb, dtype=torch.float32)
     ibr._interactions = _interaction_table(inter_path, set(int(n) for n in ibr._train_bug_ids))
     meta = (pd.read_parquet(meta_path)
             .drop_duplicates("issue_number").set_index("issue_number")["created_at"])
-    q = ibr._sbert().encode(test["text"].tolist(), batch_size=64,
-                            convert_to_numpy=True, normalize_embeddings=True, show_progress_bar=False)
-    q = torch.as_tensor(q, dtype=torch.float32)
+
+    def _t_now(issue_number) -> "pd.Timestamp | None":
+        t = meta.get(int(issue_number), None)
+        return None if pd.isna(t) else t
+
     nis = np.zeros((len(test), num_classes), dtype=np.float32)
-    for i, row in enumerate(test.itertuples()):
-        t_now = meta.get(int(row.issue_number), None)
-        if pd.isna(t_now):
-            t_now = None
-        d = ibr._score(q[i : i + 1], t_now)
-        for owner, idx in le.items():
-            nis[i, idx] = d.get(owner, 0.0)
+    if args.ibr_channel == "lexical":
+        # Mejora 1 (decorrelar el IBR): los vecinos se recuperan por BM25 LÉXICO
+        # (tokens técnicos exactos) en vez del MPNet semántico → el canal IBR deja
+        # de mirar los mismos vecinos que el CBR-recuperación, así que aporta señal
+        # ortogonal en vez de redundante. La agregación por interacciones tipadas
+        # (IP · decay · anti-fuga temporal) es idéntica al canal semántico.
+        from cbr_retrieval_openj9 import bm25_sims
+        logger.info("IBR léxico: BM25 sobre {} bugs de train (k={})...",
+                    len(train), cfg.ibr_top_k_retrieve)
+        lex = bm25_sims(train["text"].tolist(), test["text"].tolist())  # [Nte, Ntr]
+        train_ids = ibr._train_bug_ids
+        k = min(cfg.ibr_top_k_retrieve, lex.shape[1])
+        for i, row in enumerate(test.itertuples()):
+            t_now = _t_now(row.issue_number)
+            srow = lex[i]
+            top = np.argpartition(-srow, kth=k - 1)[:k]
+            isc: dict = {}
+            for j in top:
+                s = float(srow[j])
+                if s <= 0.0:  # BM25 no negativo; 0 = sin solape léxico
+                    continue
+                bug_id = int(train_ids[j])
+                for dev, kind, ts in ibr._interactions.get(bug_id, ()):  # noqa: B007
+                    if dev not in ibr._active:
+                        continue
+                    if t_now is not None and ts >= t_now:  # anti-fuga temporal
+                        continue
+                    isc[dev] = isc.get(dev, 0.0) + s * ibr._ip(kind) * ibr._decay(ts, t_now)
+            d = ibr._normalize_nis(isc)
+            for owner, idx in le.items():
+                nis[i, idx] = d.get(owner, 0.0)
+    else:  # semantic (baseline): MPNet, MISMO encoder que el CBR (correlacionado)
+        emb = ibr._sbert().encode(train["text"].tolist(), batch_size=64,
+                                  convert_to_numpy=True, normalize_embeddings=True, show_progress_bar=False)
+        ibr._train_embeddings = torch.as_tensor(emb, dtype=torch.float32)
+        q = ibr._sbert().encode(test["text"].tolist(), batch_size=64,
+                                convert_to_numpy=True, normalize_embeddings=True, show_progress_bar=False)
+        q = torch.as_tensor(q, dtype=torch.float32)
+        for i, row in enumerate(test.itertuples()):
+            d = ibr._score(q[i : i + 1], _t_now(row.issue_number))
+            for owner, idx in le.items():
+                nis[i, idx] = d.get(owner, 0.0)
 
     # ---------- fusión ----------
     def fmt(m):
         return f"Hit@1={m['hit@1']:.4f} Hit@5={m['hit@5']:.4f} Hit@10={m['hit@10']:.4f} MRR={m['mrr']:.4f}"
 
-    logger.success("== OpenJ9 sistema completo | IP C/A/D={}/{}/{} ==", args.ip_c, args.ip_a, args.ip_d)
+    wfs = [round(x, 1) for x in np.arange(0.1, 1.0001, 0.1)]
+    logger.success("== OpenJ9 sistema completo | fusion={} | canal={} | IP C/A/D={}/{}/{} ==",
+                   args.fusion, args.ibr_channel, args.ip_c, args.ip_a, args.ip_d)
     logger.info("CBR-solo        : {}", fmt(rank_metrics(nps, true_idx)))
     logger.info("IBR-solo        : {}", fmt(rank_metrics(nis, true_idx)))
-    for wf in [round(x, 1) for x in np.arange(0.1, 1.0001, 0.1)]:
+
+    if args.gate_sweep:
+        # Mejora 3: barre el umbral de gate (reusa NPS/NIS). Por gate reporta el W_f
+        # que maximiza Top-1 y el que maximiza MRR (curva en test, mismo caveat).
+        for gate in [None, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]:
+            fz = _make_fuser(nps, nis, args.fusion, args.rrf_k, gate)
+            rows = [(wf, rank_metrics(fz(wf), true_idx)) for wf in wfs]
+            bh = max(rows, key=lambda r: r[1]["hit@1"])
+            bm = max(rows, key=lambda r: r[1]["mrr"])
+            cov = "off " if gate is None else f"{float((_gate_mask(nps, gate)).mean()):.2f}"
+            logger.info("gate={:>4} (frac IBR={}): best-Top1 wf={:.1f} {} | best-MRR wf={:.1f} {}",
+                        "off" if gate is None else f"{gate:.1f}", cov,
+                        bh[0], fmt(bh[1]), bm[0], fmt(bm[1]))
+        return
+
+    fused = _make_fuser(nps, nis, args.fusion, args.rrf_k, args.gate)
+    for wf in wfs:
         tag = "  <- TriagerX W_f=0.7" if abs(wf - 0.7) < 1e-9 else ""
-        logger.info("FS W_f={:.1f}     : {}{}", wf, fmt(rank_metrics(nps + wf * nis, true_idx)), tag)
+        logger.info("FS W_f={:.1f}     : {}{}", wf, fmt(rank_metrics(fused(wf), true_idx)), tag)
 
 
 def main() -> None:
@@ -144,6 +237,19 @@ def main() -> None:
     p.add_argument("--ip-a", type=float, default=0.5)
     p.add_argument("--ip-d", type=float, default=0.1)
     p.add_argument("--max-length", type=int, default=256)
+    # IBR: cómo recupera los vecinos para el NIS (mejora 1 = decorrelar del CBR).
+    p.add_argument("--ibr-channel", choices=["semantic", "lexical"], default="semantic",
+                   help="semantic=MPNet (mismo encoder que el CBR, correlacionado); "
+                        "lexical=BM25 (tokens exactos, decorrelado del CBR)")
+    # Fusión CBR↔IBR (mejora 2): suma lineal o Reciprocal Rank Fusion.
+    p.add_argument("--fusion", choices=["linear", "rrf"], default="linear",
+                   help="linear=NPS+wf·NIS; rrf=fusión por rango (solo orden, IBR enmascarado a NIS>0)")
+    p.add_argument("--rrf-k", type=int, default=60, help="constante de RRF (mejora 2)")
+    # Fusión condicional (mejora 3): aplica el IBR solo si el CBR está inseguro.
+    p.add_argument("--gate", type=float, default=None,
+                   help="umbral de margen top1-top2 del CBR; el IBR solo entra si margen<gate")
+    p.add_argument("--gate-sweep", action="store_true",
+                   help="barre umbrales de gate (mejora 3) reusando NPS/NIS")
     p.add_argument("--cpu", action="store_true")
     # CBR: clasificador (DeBERTa entrenado) o recuperación (kNN sobre casos, sin entrenar).
     p.add_argument("--cbr-mode", choices=["classifier", "retrieval"], default="classifier")
