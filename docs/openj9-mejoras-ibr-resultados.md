@@ -157,7 +157,41 @@ recuperador. El recuperador sigue siendo la mejor base. Log:
 
 ---
 
-## Resumen de las tres palancas
+## P4 — sintonizar los valores internos del IBR (IP weights / k)
+
+Hasta P3 dejamos los **knobs propios del IBR** en default (IP `contribution/
+assignment/discussion` = 1.5/0.5/0.1, k=15). P4 los barre sobre la mejor base
+(recuperador + léxico + gate=0.3). Knob clave: los **Interaction Points**.
+
+**IP contribution-only (1.5/0/0)** — como `owner`=fixer=quien commitea el fix, la
+señal de commit es la alineada; `assignment` y `discussion` son ruido:
+
+| Config (léxico + gate=0.3, contrib-only) | Top-1 | MRR | Hit@10 |
+|---|---|---|---|
+| CBR-solo (techo) | 0.2715 | 0.4078 | 0.6779 |
+| IBR-solo (contrib-only) | 0.1573 | — | 0.4663 |
+| FS W_f=0.5 | 0.2715 | 0.4122 | 0.6873 |
+| **FS W_f=0.6** | **0.2790** | **0.4154** | 0.6929 |
+| FS W_f=0.7 | 0.2678 | 0.4090 | 0.6929 |
+
+**Barrido de k (contrib-only, gate=0.3, W_f=0.6):** k=10 → 0.2697 · **k=15 →
+0.2790** · k=30 → 0.2734. → k=15 es el óptimo (menos vecinos = ruido; más = dilución).
+
+**Hallazgo — por primera vez el full SUPERA el techo del recuperador.** Afilando el
+IP a contribution-only, `FS=0.2790 > CBR-solo 0.2715` (**+0.75 pp**) con el mejor MRR
+de todos (0.4154). Aunque el IBR-solo baja a 0.1573, la fusión mejora: el IBR ya
+aporta casos correctos en rank-1 que el CBR fallaba. El knob que importa es **cuál
+interacción cuenta**, no la fuerza del IBR-solo.
+
+> **Caveat (clave):** es un pico **seleccionado en test** (3 knobs: gate=0.3,
+> contrib-only, W_f=0.6; sin split de validación). El band es estrecho: W_f=0.5
+> empata (0.2715), 0.6 sube (0.2790), 0.7 baja. Lectura honesta: *el IBR **puede**
+> sumar ~0.75 pp al Top-1 si se afila a contribution*, no es un número de despliegue
+> robusto. La tendencia (contrib-only > default; k=15 óptimo) sí se repite en k=15/30.
+
+---
+
+## Resumen de las palancas
 
 | Palanca | Top-1 | MRR | Veredicto |
 |---|---|---|---|
@@ -165,16 +199,18 @@ recuperador. El recuperador sigue siendo la mejor base. Log:
 | **P1** decorrelar (léxico) | 0.2678 | 0.4108 | IBR deja de dañar; mejora MRR/Hit@5/10 |
 | **P2** RRF | 0.2041 | 0.3432 | **descartada** (tira la confianza del CBR) |
 | **P3** gate (semántico) | 0.2622 | 0.4070 | neutro sin decorrelar |
-| **P1+P3** léxico + gate | **0.2715** | **0.4125** | **mejor**: iguala el techo + mejor ranking |
+| **P1+P3** léxico + gate | 0.2715 | 0.4125 | iguala el techo + mejor ranking |
+| **P4** + IP contrib-only, W_f=0.6 | **0.2790** | **0.4154** | **mejor: supera el techo** (+0.75 pp, test-tuned) |
 | CBR-solo (techo) | 0.2715 | 0.4078 | referencia |
 
 **Conclusión.** El IBR no era inútil en cola larga: estaba **redundante** por
-compartir encoder con el CBR. La causa raíz era la **correlación** (lo confirma que
-P1, decorrelar, es la única palanca que ayuda; P2 falla por otra razón; P3 solo
-suma *encima* de P1). Combinando decorrelación léxica + gating, el sistema completo
-**iguala el Top-1 del recuperador (0.2715) y lo mejora en MRR (0.4125) y Hit@10**.
-El Top-1 no se *supera* (el techo del recuperador zero-shot es muy robusto en este
-régimen, como en todas las ablaciones), pero el IBR pasa de "restar" a "sumar".
+compartir encoder con el CBR (correlación). La cadena de palancas lo vuelve aditivo:
+decorrelar (P1) lo deja de dañar, gatear (P3) lo aplica solo en dudas, y **afinar el
+IP a contribution-only (P4) hace que por fin SUPERE el Top-1 del recuperador**
+(0.2790 vs 0.2715, +0.75 pp; MRR 0.4154). El salto es **modesto y test-tuned**, no
+robusto, pero invierte el veredicto anterior ("el IBR no rompe el techo"): con los
+valores correctos, sí lo rompe — poco. La brecha hasta el full de TriagerX (0.328)
+sigue intacta porque **eso es el ensemble** (2 transformers), no el IBR.
 
 ### Pendiente / trabajo futuro
 - **Vista estructural (dev↔módulo/archivo)** como variante de decorrelación de P1:
