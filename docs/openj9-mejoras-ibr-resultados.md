@@ -191,30 +191,61 @@ interacción cuenta**, no la fuerza del IBR-solo.
 
 ---
 
+## Validación honesta — el 0.2790 era sobreajuste al test
+
+P4 eligió `gate=0.3, contrib-only, W_f=0.6` **mirando el test**. Para saber si el
+salto es real, reconstruimos un **split de validación temporal** (`build_openj9_50.py
+--val-frac 0.15`): de la cola del train (issue_number más recientes antes del corte
+de test) → `traininner=2845` / `val=503`, con `test=534` intacto. Protocolo: índice =
+traininner, se sintoniza (IP, gate, W_f) en **val**, se reporta en **test**.
+
+**Tuning en val (léxico):** val elige independientemente **contribution-only** sobre
+default (val Top-1 0.2048 vs 0.2008), con `gate=0.5, W_f=0.6` (el W_f coincide con el
+de test; el gate NO). CBR-solo en val 0.1829 → fusión 0.2048 (+2.19 pp en val).
+
+**Aplicado al test intacto (config elegida en val):**
+
+| Sistema (test, val-tuned) | Top-1 | MRR | Hit@10 |
+|---|---|---|---|
+| CBR-solo (techo) | 0.2715 | 0.4078 | 0.6779 |
+| Full léxico contrib-only gate=0.5 **W_f=0.6** | **0.2603** | 0.4061 | **0.7022** |
+
+**Hallazgo definitivo — el IBR NO rompe el techo de Top-1 bajo tuning honesto.** La
+config elegida en val da **0.2603 en test, −1.1 pp por debajo del CBR-solo**. El
+pico de 0.2790 necesitaba `gate=0.3`, que era exactamente el knob sobreajustado al
+test; al `gate=0.5` que eligió val, **ningún W_f** del test supera 0.2715. El split
+de validación hizo su trabajo: expuso que "superamos el techo" era un artefacto.
+
+**Lo que SÍ sobrevive a la validación:** el IBR mejora **Hit@10 de forma robusta**
+(0.7022 vs 0.6779, **+2.4 pp**) — aporta profundidad de ranking (más candidatos
+correctos en el top-10), aunque no el Top-1. MRR queda neutro (0.4061 ≈ 0.4078).
+
+---
+
 ## Resumen de las palancas
 
 | Palanca | Top-1 | MRR | Veredicto |
 |---|---|---|---|
 | Baseline (IBR semántico, lineal) | 0.2622 | 0.4070 | el IBR **daña** (correlacionado) |
-| **P1** decorrelar (léxico) | 0.2678 | 0.4108 | IBR deja de dañar; mejora MRR/Hit@5/10 |
+| **P1** decorrelar (léxico) | 0.2678 | 0.4108 | IBR deja de dañar |
 | **P2** RRF | 0.2041 | 0.3432 | **descartada** (tira la confianza del CBR) |
 | **P3** gate (semántico) | 0.2622 | 0.4070 | neutro sin decorrelar |
-| **P1+P3** léxico + gate | 0.2715 | 0.4125 | iguala el techo + mejor ranking |
-| **P4** + IP contrib-only, W_f=0.6 | **0.2790** | **0.4154** | **mejor: supera el techo** (+0.75 pp, test-tuned) |
-| CBR-solo (techo) | 0.2715 | 0.4078 | referencia |
+| **P4** contrib-only, **test-tuned** | 0.2790 | 0.4154 | espejismo (sobreajuste al test) |
+| **P4 val-tuned (honesto)** | 0.2603 | 0.4061 | **NO supera el techo**; +2.4 pp Hit@10 |
+| CBR-solo (techo) | **0.2715** | 0.4078 | referencia, sigue siendo lo mejor en Top-1 |
 
-**Conclusión.** El IBR no era inútil en cola larga: estaba **redundante** por
-compartir encoder con el CBR (correlación). La cadena de palancas lo vuelve aditivo:
-decorrelar (P1) lo deja de dañar, gatear (P3) lo aplica solo en dudas, y **afinar el
-IP a contribution-only (P4) hace que por fin SUPERE el Top-1 del recuperador**
-(0.2790 vs 0.2715, +0.75 pp; MRR 0.4154). El salto es **modesto y test-tuned**, no
-robusto, pero invierte el veredicto anterior ("el IBR no rompe el techo"): con los
-valores correctos, sí lo rompe — poco. La brecha hasta el full de TriagerX (0.328)
-sigue intacta porque **eso es el ensemble** (2 transformers), no el IBR.
+**Conclusión (validada).** En OpenJ9 cola larga (50 clases), **el IBR no mejora el
+Top-1 del mejor sistema** (el recuperador zero-shot) bajo tuning honesto. El IBR
+estaba redundante por correlación; decorrelar (P1) + gatear (P3) + afinar el IP a
+contribution-only (P4) lo vuelven *no dañino* y mejoran la **profundidad de ranking
+(Hit@10 +2.4 pp)**, pero el **Top-1 tiene un techo que el IBR no rompe** (el aparente
++0.75 pp era sobreajuste al test, refutado en validación). El valor del IBR al Top-1
+depende del **régimen**: aporta en Mozilla (pocos devs densos, +1.6 pp) y no en
+OpenJ9 cola larga. La brecha hasta el full de TriagerX (0.328) es el **ensemble**, no
+el IBR.
 
 ### Pendiente / trabajo futuro
-- **Vista estructural (dev↔módulo/archivo)** como variante de decorrelación de P1:
-  podría ser aún más ortogonal que la léxica (captura zona del código, no solo
-  vocabulario). No ejecutada.
+- **Vista estructural (dev↔módulo/archivo)** como variante de decorrelación de P1.
 - **Fusión IBR en TypeScript** (el tercer régimen) sigue pendiente.
-- Validar `gate`/`W_f` en un split de validación si se reconstruye uno para OpenJ9.
+- **Acercarse a 0.328:** replicar el **ensemble** (2º encoder), el único lever que
+  cierra esa brecha — no el IBR.

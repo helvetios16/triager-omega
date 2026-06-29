@@ -36,6 +36,10 @@ def main() -> None:
                    help="umbral de issues por owner para entrar como clase (≥20 → 51)")
     p.add_argument("--cut", type=int, default=17695,
                    help="corte de issue_number: train < cut, test >= cut (igual que el 17-set)")
+    p.add_argument("--val-frac", type=float, default=0.0,
+                   help="si >0, carvea un split de validación de la COLA temporal del train "
+                        "(los issue_number más recientes antes de --cut) y escribe "
+                        "openj9_{traininner,val}_50.csv para sintonizar hiperparámetros sin tocar test")
     args = p.parse_args()
 
     cfg = settings
@@ -61,6 +65,22 @@ def main() -> None:
     train[cols].to_csv(out / "openj9_train_50.csv", index=False)
     test[cols].to_csv(out / "openj9_test_50.csv", index=False)
     logger.success("Escrito artifacts/openj9/openj9_{{train,test}}_50.csv")
+
+    # ---- split de validación temporal (cola del train) para sintonizar HPs ----
+    if args.val_frac > 0:
+        # val_cut = cuantil temporal del train; los issue_number >= val_cut (los más
+        # recientes, justo antes de test) son validación. El índice de tuning usa solo
+        # traininner (< val_cut) → val no recupera casos futuros (mismo protocolo que test).
+        val_cut = int(train["issue_number"].quantile(1 - args.val_frac))
+        train_inner = train[train.issue_number < val_cut].copy()
+        val = train[train.issue_number >= val_cut].copy()
+        train_inner[cols].to_csv(out / "openj9_traininner_50.csv", index=False)
+        val[cols].to_csv(out / "openj9_val_50.csv", index=False)
+        logger.success(
+            "Validación temporal: val_cut={} | traininner={} val={} ({:.0%}) | "
+            "test queda intacto ({}). Tuning: --train-csv traininner --test-csv val; "
+            "reporte: --train-csv train_50 --test-csv test_50.",
+            val_cut, len(train_inner), len(val), len(val) / len(train), len(test))
 
 
 if __name__ == "__main__":
