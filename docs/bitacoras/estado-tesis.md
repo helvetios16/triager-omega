@@ -1,3 +1,9 @@
+> **Corrección (2026-09-16):** §1 de abajo mide la destilación sobre el
+> **clasificador DeBERTa, arquitectura ya descartada**. Con la arquitectura
+> vigente (recuperación zero-shot + MPNet), la destilación sí ayuda de forma
+> consistente — ver
+> [correccion-destilacion-deberta-descartado.md](correccion-destilacion-deberta-descartado.md).
+
 # Estado de la tesis — qué sostiene la evidencia (2026-06-13)
 
 Documento de encuadre. Resume qué hipótesis del proyecto quedaron respaldadas
