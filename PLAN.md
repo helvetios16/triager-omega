@@ -1,6 +1,12 @@
 # PLAN.md — Triager-Omega
 
-> Sistema de triaje automático de bugs basado en una arquitectura híbrida de cinco módulos: destilación semántica con LLM local, clasificación basada en contenido (DeBERTa), clasificación basada en **interacciones tipadas** (SBERT + Interaction Points commit/review/assignment/discussion + decaimiento temporal, alimentadas por Bugzilla y minería de gecko-dev) y agregación aditiva `FS=NPS+W_f·NIS` con filtro de candidatos activos. Diseño alineado con la implementación real de TriagerX (ver [[triagerx-repo-local]]).
+> Sistema de triaje automático de bugs basado en una arquitectura híbrida de cinco módulos: destilación semántica con LLM local/API, Case-Based Reasoning (CBR de recuperación zero-shot e híbrido denso+léxico), clasificación basada en **interacciones tipadas** (SBERT + Interaction Points commit/review/assignment/discussion + decaimiento temporal, alimentadas por Bugzilla y minería de repositorios) y agregación aditiva `FS=NPS+W_f·NIS` con filtro de candidatos activos.
+
+> [!IMPORTANT]
+> **Actualización de Arquitectura y Estado Experimental (2026-09 / 2026-10):**
+> 1. **Módulo 3 (CBR)**: El diseño inicial con clasificador supervisado DeBERTa y cabeza softmax fue **descartado** (ver `docs/bitacoras/correccion-destilacion-deberta-descartado.md`). En su lugar rige el **CBR de Recuperación Real**: indexación con Bi-Encoder `all-mpnet-base-v2` + BM25, fusión RRF y agregación de votos por desarrollador con ponderación anti-cola-larga (`vote="idf"`, $\tau$). Módulo formalizado en `src/triager_omega/retrieval/`.
+> 2. **Récords Alcanzados**: Nuevo estado del arte en TypeScript (Hit@1 0.3354 vs 0.3240 de TriagerX) y OpenJ9 (Hit@1 0.2940 vs 0.2810 de TriagerX).
+> 3. **Estructura**: El repositorio cuenta con directorios particionados por corpus (`artifacts/{mozilla,openj9,typescript}`) y scripts funcionales (`scripts/{distill,benchmarks,legacy,tools}`). Toda la documentación formal está consolidada en `docs/tesis/` y `docs/experimental/`.
 
 ---
 
@@ -274,7 +280,11 @@ Técnica para enriquecer las clases raras (devs con pocos bugs), donde el muestr
 
 ---
 
-## 6. Módulo 3 — Clasificador CBR (DeBERTa)
+## 6. Módulo 3 — Clasificador CBR (Histórico: DeBERTa / Vigente: Recuperación MPNet+BM25)
+
+> [!NOTE]
+> **Evolución:** Esta sección documenta el diseño original del clasificador supervisado DeBERTa.
+> En la arquitectura vigente, este enfoque fue reemplazado por el **CBR de Recuperación Zero-Shot e Híbrido** (`triager_omega.retrieval`), que no requiere entrenar una cabeza softmax frágil a la cola larga y obtiene métricas superiores en todos los benchmarks. El código del clasificador DeBERTa permanece en `src/triager_omega/cbr/train.py` y `scripts/legacy/` como referencia histórica.
 
 ### 6.1 Modelo base
 
@@ -641,50 +651,49 @@ ARTIFACTS_DIR=./artifacts
 
 ```
 triager-omega/
-├── data/                              # parquet (manual)
-│   ├── Bug_meta_data_curado.parquet
-│   ├── Contribution_information_dataset_curado.parquet
-│   └── Bug_Report_Comments_curado.parquet
-├── artifacts/                         # outputs generados
-│   ├── active_candidates.json
-│   ├── label_encoder.json             # 450 devs (Módulo 1)
-│   ├── splits.parquet                 # 450 devs, 64k bugs
-│   ├── sample_weights_train.npy
-│   ├── repo_interactions.parquet      # commit/review (gecko-dev) — IBR
-│   ├── discussion_interactions.parquet# discussion limpio (sin bots, dedup) — IBR
-│   ├── pilot/                         # FASE CBR (piloto top-20 devs)
-│   │   ├── splits.parquet             #   subset piloto
-│   │   ├── label_encoder.json         #   20 devs
-│   │   ├── distillations.parquet      #   ETAPA 1: salida de la destilación (Bug Id, distilled_text)
-│   │   └── cbr_model/                 #   ETAPA 3: DeBERTa entrenado (pesos + tokenizer + metrics.json)
-│   ├── balance_experiment/            # resultados ablación cola larga
-│   └── eval/
+├── data/                              # Datasets originales y curados (.parquet)
+├── artifacts/                         # Salidas experimentales particionadas
+│   ├── mozilla/                       # Splits, directorio candidatos y piloto Bugzilla
+│   ├── openj9/                        # Datasets 50 clases, timelines y destilaciones OpenJ9
+│   ├── typescript/                    # Embeddings MPNet y destilaciones TypeScript
+│   └── _archive/                      # Checkpoints DeBERTa históricos (1.4 GB)
 ├── src/
 │   └── triager_omega/
 │       ├── __init__.py
 │       ├── config.py
+│       ├── retrieval/                 # Módulo 3 Vigente: CBR de Recuperación
+│       │   ├── retriever.py           #   Clase CbrRetriever (dense, lexical, hybrid)
+│       │   ├── voting.py              #   vote_scores() con estrategias idf, rank, tau
+│       │   ├── bm25.py                #   bm25_sims() sobre tokens técnicos
+│       │   ├── fusion.py              #   rrf_fuse() y rerank_cross_encoder()
+│       │   └── encoder.py             #   build_label_encoder()
 │       ├── data/
-│       │   ├── __init__.py
 │       │   ├── loader.py
 │       │   ├── preprocessor.py
 │       │   └── repo_miner.py
-│       ├── cbr/                       # FASE CBR (Módulos 2-3)
-│       │   ├── __init__.py
-│       │   ├── pilot.py               #   selecciona el subset piloto → artifacts/pilot/
-│       │   ├── distillation.py        #   ETAPA 1: cliente backend-agnóstico (ollama/lmstudio/google) + prompt + cache
-│       │   └── train.py               #   ETAPA 2-3: DeBERTa sobre crudo+destilado → guarda cbr_model/
-│       ├── modules/                   # (pendiente) ibr.py, aggregator.py
-│       └── pipeline.py                # (pendiente) orquestador end-to-end
+│       ├── cbr/                       # Módulo 2: Destilación LLM y selección piloto
+│       │   ├── distillation.py        #   Cliente LLM, prompts [FL][SY][CP], cache
+│       │   ├── pilot.py               #   Generación del subset piloto Mozilla
+│       │   └── train.py               #   (Histórico) Clasificador DeBERTa descartado
+│       └── modules/                   # Módulos 4-5: IBR y Agregación
+│           ├── ibr.py                 #   InteractionRecommender (SBERT + decay + IP)
+│           └── aggregator.py          #   rank_metrics() y fusión aditiva
 ├── scripts/
-│   ├── eda.py                         # estadísticas del dataset
-│   ├── run_distillation.py           # corre la ETAPA 1 (batch reanudable, --smoke N)
-│   ├── train_cbr_quick.py            # entrenamiento exploratorio (referencia para cbr/train.py)
-│   ├── balance_experiment.py         # ablación de 5 estrategias de cola larga (§11.3)
-│   ├── build_discussion_interactions.py  # limpia comments → discussion_interactions.parquet
-│   ├── inspect_bug.py                # audita la relación bug ↔ 3 fuentes del IBR
-│   └── test_{api,ollama}.py          # pruebas de conexión a los backends LLM
-├── tests/
-├── pyproject.toml
+│   ├── distill/                       # Generación de destilación DeepSeek/Ollama
+│   ├── benchmarks/                    # Suites de evaluación por corpus
+│   │   ├── openj9/                    #   cbr_retrieval, eval_full, ibr, mining
+│   │   ├── typescript/                #   eval_ts_sweep, test_compare_single
+│   │   └── mozilla/                   #   cbr_retrieval_pilot, interacciones, eda
+│   ├── legacy/                        #   Modelos DeBERTa y compatibilidad TriagerX
+│   └── tools/                         #   Tests de conectividad
+├── docs/
+│   ├── tesis/                         # Capítulos 01 al 05 consolidados y presentación
+│   ├── experimental/                  # Reportes de benchmarks y tareas pendientes
+│   ├── bitacoras/                     # Bitácoras de laboratorio y correcciones
+│   └── schemas/                       # Schemas técnicos de datasets
+├── references/                        # Papers científicos de referencia en PDF
+├── pyproject.toml / uv.lock
+├── tareas.md
 ├── CLAUDE.md
 ├── PLAN.md
 └── README.md

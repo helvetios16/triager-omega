@@ -1,0 +1,5 @@
+- [x] realizar el marco teorico
+- [x] hacer la implementacion de la seccion del ibr en base de los descubierto
+- [x] destilacion especializada y evaluacion en OpenJ9 (record 0.2940 Top-1)
+- [x] destilacion especializada y evaluacion en TypeScript (record 0.3354 Top-1)
+- [ ] realizar la nueva destilacion semantica y evaluacion CBR de recuperacion en Mozilla / BugsRepo (ver docs/experimental/pendiente-evaluacion-mozilla.md)
