@@ -26,7 +26,15 @@ import pandas as pd
 from loguru import logger
 from transformers import AutoModelForSequenceClassification, AutoTokenizer, TrainingArguments
 
-from triager_omega.cbr.train import BugDataset, WeightedTrainer, make_compute_metrics
+import sys
+from pathlib import Path
+
+# Permitir importar módulos hermanos de scripts/legacy
+_LEGACY_DIR = Path(__file__).resolve().parent
+if str(_LEGACY_DIR) not in sys.path:
+    sys.path.insert(0, str(_LEGACY_DIR))
+
+from train_deberta_supervised import BugDataset, WeightedTrainer, make_compute_metrics
 from triager_omega.config import settings
 
 

@@ -55,5 +55,5 @@ Generación, validación y consolidación de la taxonomía diagnóstica `[FL][SY
 
 Código de aproximaciones descartadas preservado por trazabilidad:
 
-- **`train_cbr.py`**, **`train_cbr_quick.py`**, **`train_openj9_cbr.py`**: Scripts de fine-tuning para el clasificador supervisado DeBERTa (sustituido por CBR de recuperación).
+- **`train_deberta_supervised.py`**, **`train_cbr_quick.py`**, **`train_openj9_cbr.py`**: Scripts de fine-tuning para el clasificador supervisado DeBERTa (sustituido por CBR de recuperación).
 - **`triagerx_compat/`**: Implementación original de referencia del paper TriagerX para replicación empírica.

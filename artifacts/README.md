@@ -38,6 +38,5 @@ Estructura de artefactos experimentales generados, particionados por corpus de e
 
 ---
 
-## 4. `artifacts/_archive/` — Modelos y Checkpoints Históricos
-- `deberta_models/`:
-  - Pesos entrenados (`model.safetensors`), configuraciones y tokenizers del clasificador supervisado DeBERTa-v3-base (arquitectura descartada en favor del CBR de recuperación zero-shot).
+## 4. Limpieza y Purga de Checkpoints Históricos
+- Los pesos entrenados (`model.safetensors`, 1.44 GB) del clasificador supervisado DeBERTa-v3-base fueron depurados de disco, al haber sido formalmente reemplazados por el CBR de recuperación zero-shot e híbrido MPNet+BM25.
