@@ -22,19 +22,7 @@ from loguru import logger
 from transformers import AutoModelForSequenceClassification, AutoTokenizer
 
 from triager_omega.config import Settings, settings
-
-
-def normalize_rows(logits: np.ndarray, how: str = "minmax") -> np.ndarray:
-    """Normaliza cada fila a [0,1] (minmax, TriagerX) o a probabilidad (softmax)."""
-    if how == "softmax":
-        z = logits - logits.max(axis=1, keepdims=True)
-        e = np.exp(z)
-        return e / e.sum(axis=1, keepdims=True)
-    # minmax por fila (réplica de _normalize_tensor de TriagerX).
-    mn = logits.min(axis=1, keepdims=True)
-    mx = logits.max(axis=1, keepdims=True)
-    rng = np.where((mx - mn) == 0, 1.0, mx - mn)
-    return (logits - mn) / rng
+from triager_omega.modules.aggregator import normalize_rows
 
 
 class CbrPredictor:

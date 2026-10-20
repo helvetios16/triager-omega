@@ -21,65 +21,19 @@ import pandas as pd
 import torch
 from loguru import logger
 from sentence_transformers import SentenceTransformer
-from rank_bm25 import BM25Okapi
 
 from triager_omega.config import settings
 from triager_omega.modules.aggregator import rank_metrics
+from triager_omega.retrieval import (
+    bm25_sims,
+    build_label_encoder,
+    rrf_fuse,
+    vote_scores,
+)
 
 
 def label_encoder(train: pd.DataFrame, test: pd.DataFrame) -> dict[str, int]:
-    owners = sorted(set(train["owner"].dropna()) | set(test["owner"].dropna()))
-    return {o: i for i, o in enumerate(owners)}
-
-
-def vote_scores(sims: np.ndarray, train_cls: np.ndarray, num_classes: int,
-                top_k: int, tau: float, vote: str = "sum",
-                dev_freq: np.ndarray | None = None) -> np.ndarray:
-    n = sims.shape[0]
-    scores = np.zeros((n, num_classes), dtype=np.float32)
-    w = np.clip(sims, 0.0, None) ** tau
-    top_k = min(top_k, sims.shape[1])
-    part = np.argpartition(-sims, kth=top_k - 1, axis=1)[:, :top_k]
-
-    for i in range(n):
-        cols = part[i]
-        order = cols[np.argsort(-sims[i, cols])]
-        wi = w[i, order]
-        cls = train_cls[order]
-        if vote == "idf" and dev_freq is not None:
-            Ntr = len(train_cls)
-            idf = np.log((Ntr + 1.0) / (dev_freq[cls] + 1.0))
-            wi = wi * idf
-        elif vote == "max":
-            np.maximum.at(scores[i], cls, wi)
-            continue
-        np.add.at(scores[i], cls, wi)
-    return scores
-
-
-def tokenize_ts(txt: str) -> list[str]:
-    # Tokenizador que preserva identificadores de TypeScript (ej: TS2322, TypeChecker, etc.)
-    return re.findall(r"[A-Za-z0-9_#$]+", txt.lower())
-
-
-def bm25_sims(tr_texts: list[str], te_texts: list[str]) -> np.ndarray:
-    tokenized_corpus = [tokenize_ts(t) for t in tr_texts]
-    bm25 = BM25Okapi(tokenized_corpus)
-    out = np.empty((len(te_texts), len(tr_texts)), dtype=np.float32)
-    for i, q in enumerate(te_texts):
-        out[i] = bm25.get_scores(tokenize_ts(q))
-    return out
-
-
-def rrf_fuse(dense: np.ndarray, sparse: np.ndarray, k: int = 60) -> np.ndarray:
-    fused = np.zeros_like(dense, dtype=np.float32)
-    for mat in (dense, sparse):
-        order = np.argsort(-mat, axis=1)
-        ranks = np.empty_like(order)
-        rows = np.arange(mat.shape[0])[:, None]
-        ranks[rows, order] = np.arange(mat.shape[1])[None, :]
-        fused += 1.0 / (k + ranks + 1.0)
-    return fused
+    return build_label_encoder(train["owner"], test["owner"])
 
 
 def get_embeddings(model: SentenceTransformer, texts: list[str], cache_path: Path) -> np.ndarray:

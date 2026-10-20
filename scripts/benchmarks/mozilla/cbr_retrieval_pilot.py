@@ -27,9 +27,8 @@ import torch
 from loguru import logger
 from sentence_transformers import SentenceTransformer
 
-from triager_omega.cbr.predict import normalize_rows
 from triager_omega.config import settings
-from triager_omega.modules.aggregator import rank_metrics
+from triager_omega.modules.aggregator import normalize_rows, rank_metrics
 from triager_omega.modules.ibr import InteractionRecommender, combine_text, load_pilot_text
 from triager_omega.retrieval import vote_scores
 

@@ -33,9 +33,8 @@ import torch
 from loguru import logger
 from transformers import AutoModelForSequenceClassification, AutoTokenizer
 
-from triager_omega.cbr.predict import normalize_rows
 from triager_omega.config import Settings
-from triager_omega.modules.aggregator import rank_metrics
+from triager_omega.modules.aggregator import normalize_rows, rank_metrics
 from triager_omega.modules.ibr import InteractionRecommender
 
 

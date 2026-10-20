@@ -27,14 +27,30 @@ from __future__ import annotations
 
 import argparse
 import json
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import torch
 from loguru import logger
 
-from triager_omega.cbr.predict import CbrPredictor
 from triager_omega.config import Settings, settings
 from triager_omega.modules.ibr import InteractionRecommender, combine_text, load_pilot_text
+
+if TYPE_CHECKING:
+    from triager_omega.cbr.predict import CbrPredictor
+
+
+def normalize_rows(logits: np.ndarray, how: str = "minmax") -> np.ndarray:
+    """Normaliza cada fila a [0,1] (minmax, TriagerX) o a probabilidad (softmax)."""
+    if how == "softmax":
+        z = logits - logits.max(axis=1, keepdims=True)
+        e = np.exp(z)
+        return e / e.sum(axis=1, keepdims=True)
+    # minmax por fila (réplica de _normalize_tensor de TriagerX).
+    mn = logits.min(axis=1, keepdims=True)
+    mx = logits.max(axis=1, keepdims=True)
+    rng = np.where((mx - mn) == 0, 1.0, mx - mn)
+    return (logits - mn) / rng
 
 
 def rank_metrics(scores: np.ndarray, true_idx: np.ndarray, ks=(1, 3, 5, 10)) -> dict:
@@ -132,6 +148,8 @@ class TriagerAggregator:
 
 
 def _build(cbr_mode: str, ibr_mode: str, w_f: float | None, nps_norm: str) -> TriagerAggregator:
+    from triager_omega.cbr.predict import CbrPredictor
+
     cbr = CbrPredictor(text_mode=cbr_mode)
     ibr = InteractionRecommender(text_mode=ibr_mode).load()
     return TriagerAggregator(cbr, ibr, w_f=w_f, nps_norm=nps_norm)

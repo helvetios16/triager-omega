@@ -8,7 +8,7 @@ import numpy as np
 def bm25_sims(
     train_texts: Sequence[str],
     test_texts: Sequence[str],
-    token_pattern: str = r"[A-Za-z0-9_.:#]+",
+    token_pattern: str = r"[A-Za-z0-9_.:#$]+",
 ) -> np.ndarray:
     """Calcula la matriz de similitud léxica BM25 [N_test, N_train].
 
