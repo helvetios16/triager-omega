@@ -22,6 +22,12 @@ import { parse } from 'csv-parse/sync';
 import { parseArgs } from 'util';
 import { appendFileSync, existsSync, readFileSync } from 'fs';
 import { join } from 'path';
+import {
+  Distillation,
+  isValid,
+  toDistilledText,
+  extractJson,
+} from './deepseek_engine';
 
 const { values } = parseArgs({
   args: Bun.argv.slice(2),
@@ -170,13 +176,6 @@ interface TsIssueRow {
   text?: string;
 }
 
-interface Distillation {
-  fault_location: { product: string; component: string; subsystem: string };
-  symptoms: string[];
-  capabilities: string[];
-  _fallback?: boolean;
-}
-
 interface CheckpointRecord {
   issue_number: string;
   owner: string;
@@ -212,21 +211,6 @@ const shots = FEW_SHOT_EXAMPLES.map(
 ).join('\n\n');
 const SYSTEM_MESSAGE = `${SYSTEM_PROMPT}\n\n## Few-shot Examples\n\n${shots}`;
 
-function isValid(d: any): d is Distillation {
-  return (
-    d &&
-    typeof d === 'object' &&
-    d.fault_location &&
-    typeof d.fault_location === 'object' &&
-    typeof d.fault_location.product === 'string' &&
-    typeof d.fault_location.component === 'string' &&
-    Array.isArray(d.symptoms) &&
-    d.symptoms.every((s: unknown) => typeof s === 'string') &&
-    Array.isArray(d.capabilities) &&
-    d.capabilities.every((s: unknown) => typeof s === 'string')
-  );
-}
-
 function fallback(row: TsIssueRow): Distillation {
   return {
     fault_location: {
@@ -238,44 +222,6 @@ function fallback(row: TsIssueRow): Distillation {
     capabilities: [],
     _fallback: true,
   };
-}
-
-function toDistilledText(d: Distillation): string {
-  const fl = [d.fault_location.product, d.fault_location.component, d.fault_location.subsystem]
-    .filter(Boolean)
-    .join(' ');
-  return `[FL] ${fl} [SY] ${d.symptoms.join(' ')} [CP] ${d.capabilities.join(' ')}`.trim();
-}
-
-function extractJson(raw: string): unknown {
-  let s = raw.trim();
-  if (s.startsWith('```')) s = s.replace(/^```(?:json)?/, '').replace(/```$/, '').trim();
-
-  const start = s.indexOf('{');
-  if (start === -1) throw new Error('sin objeto JSON en la respuesta');
-
-  let depth = 0;
-  let inString = false;
-  let escaped = false;
-  for (let i = start; i < s.length; i++) {
-    const c = s[i];
-    if (escaped) {
-      escaped = false;
-      continue;
-    }
-    if (c === '\\') {
-      escaped = true;
-      continue;
-    }
-    if (c === '"') {
-      inString = !inString;
-      continue;
-    }
-    if (inString) continue;
-    if (c === '{') depth++;
-    else if (c === '}' && --depth === 0) return JSON.parse(s.slice(start, i + 1));
-  }
-  throw new Error('objeto JSON sin cerrar');
 }
 
 // Estadísticas acumuladas
