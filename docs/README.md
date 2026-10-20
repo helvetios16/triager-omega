@@ -33,14 +33,7 @@ Reportes de experimentos específicos, barridos de hiperparámetros y hojas de t
 
 ## 3. Bitácoras y Notas Históricas (`docs/bitacoras/`)
 
-Registro cronológico de decisiones, descubrimientos técnicos y sesiones de depuración:
-
-- `correccion-destilacion-deberta-descartado.md`: Documento clave donde se constata el descarte del clasificador DeBERTa y la adopción del CBR de recuperación.
-- `bitacora-destilacion-llm-ts-openj9.md`: Registro de generación de destilaciones masivas con DeepSeek Flash.
-- `registro-constancia-y-verificacion-ts.md`: Chequeo de integridad y schemas en TypeScript.
-- `piloto-destilacion-agy-openj9.md`: Primer piloto con modelos ligeros.
-- `gecko-dev-mining-status.md`: Estado de extracción y parseo del repositorio Git de Mozilla.
-- `entrenamiento-laptop.md`, `ollama-remoto.md`, `sesion-2026-06-08.md`: Bitácoras de entorno y conectividad local/remota.
+Registro de notas de trabajo activas y bitácoras de laboratorio. Las 15 notas previas de investigación fueron completamente consolidadas e integradas en los capítulos formales de [`docs/tesis/`](file:///Users/sebastian/Documents/Python/triager-omega/docs/tesis), y sus borradores fuente se preservan en `docs/bitacoras/_archive/`.
 
 ---
 
