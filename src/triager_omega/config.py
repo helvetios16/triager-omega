@@ -68,6 +68,11 @@ class Settings(BaseSettings):
     # necesita razonamiento; el variante non-reasoning es ~2-4× más barato y rápido.
     # ("grok-3-mini" era un alias legacy que xAI redirige silenciosamente a grok-4.3.)
     grok_model: str = "grok-4.20-0309-non-reasoning"
+    nvidia_api_key: str = ""
+    nvidia_base_url: str = "https://integrate.api.nvidia.com/v1"
+    nvidia_model: str = "deepseek-ai/deepseek-v4-flash"  # API gratuita NVIDIA NIM, alternativa a agy (sin subprocess)
+    agy_model: str = "Gemini 3.5 Flash (Medium)"  # CLI `agy` (subprocess); ver `agy models`
+    opencode_model: str = "opencode/deepseek-v4-flash-free"  # CLI `opencode run` (subprocess, gratis)
     distill_max_comment_chars: int = 1500      # truncado del primer comentario en la entrada
     distill_max_tokens: int = 2048             # holgado; con think=False Gemma no genera preámbulo
     torch_device: str = Field(default_factory=_detect_torch_device)
@@ -133,27 +138,46 @@ class Settings(BaseSettings):
     ip_assignment: float = 0.5     # (TriagerX: 0.5)
     ip_discussion: float = 0.5     # (TriagerX: 0.1)
 
-    # ----- Rutas derivadas a artefactos del Módulo 1 -----
+    # ----- Directorios base por corpus experimental -----
+    @property
+    def mozilla_dir(self) -> Path:
+        p = self.artifacts_dir / "mozilla"
+        return p if p.exists() else self.artifacts_dir
+
+    @property
+    def openj9_dir(self) -> Path:
+        return self.artifacts_dir / "openj9"
+
+    @property
+    def typescript_dir(self) -> Path:
+        return self.artifacts_dir / "typescript"
+
+    @property
+    def archive_dir(self) -> Path:
+        return self.artifacts_dir / "_archive"
+
+    # ----- Rutas derivadas a artefactos de Mozilla (Módulo 1) -----
     @property
     def active_candidates_path(self) -> Path:
-        return self.artifacts_dir / "active_candidates.json"
+        return self.mozilla_dir / "active_candidates.json"
 
     @property
     def label_encoder_path(self) -> Path:
-        return self.artifacts_dir / "label_encoder.json"
+        return self.mozilla_dir / "label_encoder.json"
 
     @property
     def splits_path(self) -> Path:
-        return self.artifacts_dir / "splits.parquet"
+        return self.mozilla_dir / "splits.parquet"
 
     @property
     def sample_weights_path(self) -> Path:
-        return self.artifacts_dir / "sample_weights_train.npy"
+        return self.mozilla_dir / "sample_weights_train.npy"
 
     # ----- Rutas del piloto del CBR (Módulo 2-3) -----
     @property
     def pilot_dir(self) -> Path:
-        return self.artifacts_dir / "pilot"
+        p = self.mozilla_dir / "pilot"
+        return p if p.exists() else (self.artifacts_dir / "pilot")
 
     @property
     def pilot_splits_path(self) -> Path:
@@ -171,12 +195,12 @@ class Settings(BaseSettings):
     @property
     def repo_interactions_path(self) -> Path:
         """Interacciones commit/review minadas de gecko-dev (data/repo_miner.py)."""
-        return self.artifacts_dir / "repo_interactions.parquet"
+        return self.mozilla_dir / "repo_interactions.parquet"
 
     @property
     def discussion_interactions_path(self) -> Path:
-        """Interacciones discussion limpias (scripts/build_discussion_interactions.py)."""
-        return self.artifacts_dir / "discussion_interactions.parquet"
+        """Interacciones discussion limpias (scripts/benchmarks/mozilla/build_discussion_interactions.py)."""
+        return self.mozilla_dir / "discussion_interactions.parquet"
 
     @property
     def ibr_embeddings_path(self) -> Path:

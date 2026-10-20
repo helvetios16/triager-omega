@@ -6,8 +6,13 @@ y lo serializa al texto destilado `[FL] ... [SY] ... [CP] ...` (§5.8) que consu
 DeBERTa (CBR) y SBERT (IBR).
 
 Backends (config.distill_backend):
-  - "lmstudio": servidor local OpenAI-compatible (sin límite, para el batch completo).
+  - "ollama":   servidor local OpenAI-compatible (sin límite, para el batch completo).
+  - "lmstudio": servidor local OpenAI-compatible (alternativa a ollama).
   - "google":   API Google AI vía google.genai (rápido para probar; ojo rate limits).
+  - "grok":     API xAI, OpenAI-compatible (rápido para pilotos; de pago).
+  - "nvidia":   API NVIDIA NIM, OpenAI-compatible (rápido para pilotos; gratis, ~40 req/min).
+  - "agy":      CLI `agy` (subprocess, ver cfg.agy_model); sin límite oficial pero lento.
+  - "opencode": CLI `opencode run` (subprocess, ver cfg.opencode_model); gratis, lento.
 
 El prompt (system + few-shot) replica `scripts/test_api.py`. La destilación se
 cachea en `artifacts/pilot/distillations.parquet` (clave `Bug Id`) y es idempotente.
@@ -147,6 +152,16 @@ class _GoogleBackend:
         return (resp.text or "").strip()
 
 
+def build_flat_prompt(user_input: str) -> str:
+    """Prompt aplanado a un solo string (system + few-shot + entrada), para backends
+    CLI/subprocess (agy, opencode) que no exponen una API de mensajes por rol."""
+    turns = [SYSTEM_PROMPT.strip()]
+    for ex in FEW_SHOT_EXAMPLES:
+        turns.append("### Ejemplo\nInput:\n" + ex["input"] + "\nOutput:\n" + ex["output"])
+    turns.append("### Ahora tú — responde SOLO con el JSON, nada más\nInput:\n" + user_input + "\nOutput:")
+    return "\n\n".join(turns)
+
+
 def _chat_messages(user_input: str) -> list[dict]:
     """system + few-shot (user/assistant) + entrada. Para backends OpenAI-compatibles
     que sí soportan rol system (Ollama, LM Studio)."""
@@ -223,6 +238,76 @@ class _GrokBackend:
         return (resp.choices[0].message.content or "").strip()
 
 
+class _NvidiaBackend:
+    """Modelo vía NVIDIA NIM (API OpenAI-compatible, catálogo build.nvidia.com).
+    Modelo en cfg.nvidia_model (default deepseek-ai/deepseek-v4-flash). Lee
+    NVIDIA_API_KEY del .env. Gratuita con rate limit (~40 req/min)."""
+
+    def __init__(self, cfg: Settings):
+        from openai import OpenAI
+        from dotenv import load_dotenv
+        import os
+
+        load_dotenv()
+        api_key = cfg.nvidia_api_key or os.environ.get("NVIDIA_API_KEY", "")
+        if not api_key:
+            raise ValueError("NVIDIA_API_KEY no encontrada en .env ni en config")
+        self.client = OpenAI(base_url=cfg.nvidia_base_url, api_key=api_key)
+        self.model = cfg.nvidia_model
+        self.max_tokens = cfg.distill_max_tokens
+
+    def complete(self, user_input: str) -> str:
+        resp = self.client.chat.completions.create(
+            model=self.model, messages=_chat_messages(user_input),
+            temperature=0.0, max_tokens=self.max_tokens,
+            extra_body={"chat_template_kwargs": {"thinking": False}},
+        )
+        return (resp.choices[0].message.content or "").strip()
+
+
+class _AgyBackend:
+    """Modelo vía CLI `agy` (subprocess, agente con modelos en la nube: Gemini/Claude/
+    GPT-OSS). Modelo en cfg.agy_model (ver `agy models`). Cada llamada lanza un
+    proceso nuevo — mucho más lento que las APIs OpenAI-compatibles; usar --workers bajo."""
+
+    def __init__(self, cfg: Settings, timeout_s: int = 60):
+        self.model = cfg.agy_model
+        self.timeout_s = timeout_s
+
+    def complete(self, user_input: str) -> str:
+        import subprocess
+
+        prompt = build_flat_prompt(user_input)
+        result = subprocess.run(
+            ["agy", "-p", prompt, "--model", self.model, "--print-timeout", f"{self.timeout_s}s"],
+            capture_output=True, text=True, timeout=self.timeout_s + 20,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(f"agy exit {result.returncode}: {result.stderr[:300]}")
+        return result.stdout.strip()
+
+
+class _OpencodeBackend:
+    """Modelo vía CLI `opencode run` (subprocess). Modelo en cfg.opencode_model,
+    formato provider/model (default opencode/deepseek-v4-flash-free, gratis)."""
+
+    def __init__(self, cfg: Settings, timeout_s: int = 90):
+        self.model = cfg.opencode_model
+        self.timeout_s = timeout_s
+
+    def complete(self, user_input: str) -> str:
+        import subprocess
+
+        prompt = build_flat_prompt(user_input)
+        result = subprocess.run(
+            ["opencode", "run", prompt, "--model", self.model],
+            capture_output=True, text=True, timeout=self.timeout_s,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(f"opencode exit {result.returncode}: {result.stderr[:300]}")
+        return result.stdout.strip()
+
+
 def make_client(cfg: Settings = settings):
     """Instancia el backend según config.distill_backend."""
     if cfg.distill_backend == "ollama":
@@ -233,6 +318,12 @@ def make_client(cfg: Settings = settings):
         return _LMStudioBackend(cfg)
     if cfg.distill_backend == "grok":
         return _GrokBackend(cfg)
+    if cfg.distill_backend == "nvidia":
+        return _NvidiaBackend(cfg)
+    if cfg.distill_backend == "agy":
+        return _AgyBackend(cfg)
+    if cfg.distill_backend == "opencode":
+        return _OpencodeBackend(cfg)
     raise ValueError(f"distill_backend desconocido: {cfg.distill_backend}")
 
 
