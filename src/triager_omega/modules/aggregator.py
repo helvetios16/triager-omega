@@ -36,9 +36,6 @@ from loguru import logger
 from triager_omega.config import Settings, settings
 from triager_omega.modules.ibr import InteractionRecommender, combine_text, load_pilot_text
 
-if TYPE_CHECKING:
-    from triager_omega.cbr.predict import CbrPredictor
-
 
 def normalize_rows(logits: np.ndarray, how: str = "minmax") -> np.ndarray:
     """Normaliza cada fila a [0,1] (minmax, TriagerX) o a probabilidad (softmax)."""
@@ -69,7 +66,7 @@ class TriagerAggregator:
 
     def __init__(
         self,
-        cbr: CbrPredictor,
+        cbr: Any,
         ibr: InteractionRecommender,
         w_f: float | None = None,
         nps_norm: str = "minmax",
@@ -148,11 +145,11 @@ class TriagerAggregator:
 
 
 def _build(cbr_mode: str, ibr_mode: str, w_f: float | None, nps_norm: str) -> TriagerAggregator:
-    from triager_omega.cbr.predict import CbrPredictor
-
-    cbr = CbrPredictor(text_mode=cbr_mode)
-    ibr = InteractionRecommender(text_mode=ibr_mode).load()
-    return TriagerAggregator(cbr, ibr, w_f=w_f, nps_norm=nps_norm)
+    raise NotImplementedError(
+        "El clasificador supervisado DeBERTa fue formalmente descartado. "
+        "Para evaluación de sistemas híbridos, utilice `scripts/benchmarks/openj9/eval_openj9_full.py` "
+        "o `scripts/benchmarks/mozilla/cbr_retrieval_pilot.py` con `triager_omega.retrieval.CbrRetriever`."
+    )
 
 
 def main() -> None:

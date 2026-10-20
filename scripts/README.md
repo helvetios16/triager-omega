@@ -8,11 +8,11 @@ Organización funcional de los scripts del proyecto por propósito y dataset.
 
 Generación, validación y consolidación de la taxonomía diagnóstica `[FL][SY][CP]` sobre los reportes de error:
 
-- **`distill_deepseek_ts.ts`**: Destilación masiva en TypeScript usando DeepSeek Flash vía API.
-- **`distill_deepseek_openj9.ts`**: Destilación masiva en OpenJ9 usando DeepSeek Flash.
+- **`deepseek_engine.ts`**: Motor central compartido de destilación (cliente HTTP con retry, parser JSON y validación taxonómica).
+- **`distill_deepseek_ts.ts`**: Runner especializado para TypeScript con prompts de compilador.
+- **`distill_deepseek_openj9.ts`**: Runner especializado para OpenJ9 con prompts de arquitectura JVM.
 - **`distill_opencode_ts.ts`**: Pipeline de destilación alternativo con modelos OpenCode.
 - **`distill_openj9_full.py`**: Batch runner en Python para destilación OpenJ9.
-- **`pilot_destilacion_agy_openj9.py`**: Script de pruebas piloto de destilación ligera.
 - **`run_distillation.py`**: Generador de destilación para Mozilla Bugzilla (Ollama / LM Studio / Google).
 - **`merge_distillations.ts`**: Unifica checkpoints y salidas parciales de destilación en parquet/csv.
 - **`reprocess_fallbacks.ts`**: Reprocesa casos que cayeron en fallback durante la destilación.
@@ -33,7 +33,6 @@ Generación, validación y consolidación de la taxonomía diagnóstica `[FL][SY
 
 ### `typescript/` (Microsoft TypeScript)
 - **`eval_ts_sweep.py`**: Barrido de hiperparámetros ($k \in \{5..50\}$, $\tau$, normalización de voto) sobre embeddings densos e híbridos.
-- **`test_compare_single.ts`**: Script de prueba rápida para diagnosticar la recuperación sobre un único bug.
 
 ### `mozilla/` (Mozilla Bugzilla)
 - **`cbr_retrieval_pilot.py`**: Evaluación del CBR zero-shot sobre el piloto de 20 desarrolladores activos.
@@ -55,5 +54,6 @@ Generación, validación y consolidación de la taxonomía diagnóstica `[FL][SY
 
 Código de aproximaciones descartadas preservado por trazabilidad:
 
-- **`train_deberta_supervised.py`**, **`train_cbr_quick.py`**, **`train_openj9_cbr.py`**: Scripts de fine-tuning para el clasificador supervisado DeBERTa (sustituido por CBR de recuperación).
+- **`train_deberta_supervised.py`** y **`predict_deberta_supervised.py`**: Pipeline de entrenamiento supervisado e inferencia de DeBERTa-v3-base (sustituido por CBR de recuperación).
+- **`train_openj9_cbr.py`**: Script de fine-tuning sobre OpenJ9.
 - **`triagerx_compat/`**: Implementación original de referencia del paper TriagerX para replicación empírica.
