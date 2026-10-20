@@ -1,5 +1,10 @@
-"""Fase CBR (Módulos 2-3): subconjunto piloto, destilación y entrenamiento.
+"""Fase CBR (Módulos 2-3): subconjunto piloto, destilación y Case-Based Reasoning.
 
-Piloto a escala TriagerX (top-N devs, cap por dev) para validar el diseño antes
-de correr el sistema completo sobre los 450 devs / 64k bugs.
+NOTA DE ARQUITECTURA:
+  El entrenamiento del clasificador supervisado DeBERTa (train.py / predict.py)
+  ha sido descartado en favor de la arquitectura de Case-Based Reasoning real
+  (CBR de Recuperación Zero-Shot e Híbrido denso+léxico).
+  Para la nueva arquitectura, utilizar `triager_omega.retrieval`.
 """
+
+from triager_omega.retrieval import CbrRetriever, CbrConfig, vote_scores, bm25_sims

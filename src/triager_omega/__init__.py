@@ -12,3 +12,7 @@ import os as _os
 
 logger.remove()
 logger.add(sys.stderr, level=_os.getenv("TRIAGER_LOG_LEVEL", "INFO"))
+
+from triager_omega.retrieval import CbrRetriever, CbrConfig
+
+__all__ = ["__version__", "CbrRetriever", "CbrConfig"]
