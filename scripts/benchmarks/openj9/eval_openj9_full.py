@@ -18,7 +18,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from collections import defaultdict
+from pathlib import Path
+
+# Permitir importar módulos locales del benchmark openj9
+_LOCAL_DIR = Path(__file__).resolve().parent
+if str(_LOCAL_DIR) not in sys.path:
+    sys.path.insert(0, str(_LOCAL_DIR))
 
 import numpy as np
 import pandas as pd

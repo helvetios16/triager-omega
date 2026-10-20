@@ -19,17 +19,19 @@ Uso:
 from __future__ import annotations
 
 import argparse
+import sys
+from pathlib import Path
 
 import numpy as np
 import torch
 from loguru import logger
 from sentence_transformers import SentenceTransformer
 
-from cbr_retrieval_openj9 import vote_scores
 from triager_omega.cbr.predict import normalize_rows
 from triager_omega.config import settings
 from triager_omega.modules.aggregator import rank_metrics
 from triager_omega.modules.ibr import InteractionRecommender, combine_text, load_pilot_text
+from triager_omega.retrieval import vote_scores
 
 
 def _fmt(m: dict) -> str:

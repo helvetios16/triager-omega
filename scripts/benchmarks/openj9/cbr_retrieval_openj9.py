@@ -39,126 +39,17 @@ from sentence_transformers import SentenceTransformer
 
 from triager_omega.config import settings
 from triager_omega.modules.aggregator import rank_metrics
+from triager_omega.retrieval import (
+    bm25_sims,
+    build_label_encoder,
+    rerank_cross_encoder,
+    rrf_fuse,
+    vote_scores,
+)
 
 
 def label_encoder(train: pd.DataFrame, test: pd.DataFrame) -> dict[str, int]:
-    owners = sorted(set(train["owner"].dropna()) | set(test["owner"].dropna()))
-    return {o: i for i, o in enumerate(owners)}
-
-
-def vote_scores(sims: np.ndarray, train_cls: np.ndarray, num_classes: int,
-                top_k: int, tau: float, decay: np.ndarray | None = None,
-                vote: str = "sum", dev_freq: np.ndarray | None = None) -> np.ndarray:
-    """Matriz de scores [Nte, C] por voto kNN ponderado por similitud^τ (· decay).
-
-    `vote` controla cómo se agrega el peso de los vecinos de un mismo dev (mejora 1,
-    ataca el sesgo de cola larga: un dev prolífico aparece en muchos vecinos):
-      - sum  : Σ w           (baseline, favorece a devs frecuentes)
-      - mean : Σ w / nº de vecinos de ese dev en el top-k
-      - max  : max w         (vale el vecino más cercano, ignora cantidad)
-      - idf  : Σ w · log(Ntr / freq(dev))   (penaliza devs globalmente frecuentes)
-      - rank : Σ 1/(rango+1) en vez de sim^τ (peso por posición, no por magnitud)
-    """
-    n = sims.shape[0]
-    scores = np.zeros((n, num_classes), dtype=np.float32)
-    counts = np.zeros((n, num_classes), dtype=np.float32)
-    w = np.clip(sims, 0.0, None) ** tau
-    if decay is not None:
-        w = w * decay[None, :]
-    top_k = min(top_k, sims.shape[1])
-    # top-k vecinos por fila, ORDENADOS (para el modo rank)
-    part = np.argpartition(-sims, kth=top_k - 1, axis=1)[:, :top_k]
-    for i in range(n):
-        cols = part[i]
-        order = cols[np.argsort(-sims[i, cols])]  # vecinos ordenados por similitud desc
-        wi = w[i, order]
-        if vote == "rank":
-            wi = 1.0 / (np.arange(len(order)) + 1.0)
-        cls = train_cls[order]
-        if vote == "max":
-            np.maximum.at(scores[i], cls, wi)
-        else:
-            np.add.at(scores[i], cls, wi)
-            np.add.at(counts[i], cls, 1.0)
-    if vote == "mean":
-        scores = np.divide(scores, counts, out=np.zeros_like(scores), where=counts > 0)
-    elif vote == "idf" and dev_freq is not None:
-        idf = np.log(dev_freq.sum() / np.clip(dev_freq, 1, None)).astype(np.float32)
-        scores = scores * idf[None, :]
-    return scores
-
-
-def bm25_sims(train_texts: list[str], test_texts: list[str]) -> np.ndarray:
-    """Matriz BM25 [Nte, Ntr] (similitud léxica exacta; complementa la semántica).
-
-    Tokeniza conservando identificadores técnicos (com.ibm.j9, códigos de error,
-    nombres de clase) que la similitud densa difumina y que importan en la cola larga.
-    """
-    import re
-
-    from rank_bm25 import BM25Okapi
-
-    tok = lambda s: re.findall(r"[A-Za-z0-9_.:#]+", s.lower())
-    corpus = [tok(t) for t in train_texts]
-    bm25 = BM25Okapi(corpus)
-    out = np.zeros((len(test_texts), len(train_texts)), dtype=np.float32)
-    for i, q in enumerate(test_texts):
-        out[i] = bm25.get_scores(tok(q))
-    return out
-
-
-def rrf_fuse(dense: np.ndarray, lexical: np.ndarray, k: int = 60) -> np.ndarray:
-    """Reciprocal Rank Fusion de dos matrices de similitud [Nte, Ntr].
-
-    RRF(doc) = 1/(k+rango_denso) + 1/(k+rango_léxico). Robusto a escalas distintas
-    (BM25 vs coseno): solo usa el orden, no la magnitud.
-    """
-    fused = np.zeros_like(dense, dtype=np.float32)
-    for mat in (dense, lexical):
-        ranks = np.empty_like(mat, dtype=np.int64)
-        order = np.argsort(-mat, axis=1)
-        rows = np.arange(mat.shape[0])[:, None]
-        ranks[rows, order] = np.arange(mat.shape[1])[None, :]
-        fused += 1.0 / (k + ranks + 1.0)
-    return fused
-
-
-def rerank_cross_encoder(sims: np.ndarray, train_texts: list[str], test_texts: list[str],
-                         model_name: str, top_n: int, device: str, batch: int = 32) -> np.ndarray:
-    """Re-ordena los top-N candidatos densos con un cross-encoder (mejora 2).
-
-    El bi-encoder (MPNet) da recall; el cross-encoder mira query+candidato JUNTOS y
-    da precisión fina en el top → sube el Top-1 sin entrenar nada. Devuelve una nueva
-    matriz [Nte, Ntr] con sigmoid(score CE) en los candidatos y 0 en el resto.
-
-    El modelo es chico (MiniLM-L6); en MPS la gestión de memoria revienta con muchos
-    pares → se corre en CPU (rápido igual). En CUDA usa la GPU.
-    """
-    from sentence_transformers import CrossEncoder
-
-    ce_device = "cpu" if device == "mps" else device  # MPS OOM con muchos pares
-    ce = CrossEncoder(model_name, device=ce_device, max_length=256)
-    # Los bug reports traen logs/stack traces enormes; el tokenizer procesa el string
-    # COMPLETO antes de truncar a 256 tokens → thrashing. Recortamos a ~2000 chars
-    # (cubre de sobra los 256 tokens útiles) antes de armar los pares.
-    cap = 2000
-    tr_cap = [t[:cap] for t in train_texts]
-    te_cap = [t[:cap] for t in test_texts]
-    top_n = min(top_n, sims.shape[1])
-    cand = np.argpartition(-sims, kth=top_n - 1, axis=1)[:, :top_n]
-    out = np.zeros_like(sims, dtype=np.float32)
-    pairs, locs = [], []
-    for i in range(sims.shape[0]):
-        for j in cand[i]:
-            pairs.append([te_cap[i], tr_cap[j]])
-            locs.append((i, j))
-    logger.info("Cross-encoder re-rank ({}): {} pares ({} queries × top-{})...",
-                ce_device, len(pairs), sims.shape[0], top_n)
-    raw = ce.predict(pairs, batch_size=batch, show_progress_bar=True, convert_to_numpy=True)
-    ssig = 1.0 / (1.0 + np.exp(-raw))  # logits → [0,1]
-    for (i, j), s in zip(locs, ssig):
-        out[i, j] = s
-    return out
+    return build_label_encoder(train["owner"], test["owner"])
 
 
 def main() -> None:
