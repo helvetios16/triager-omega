@@ -33,7 +33,7 @@ def main() -> None:
     p.add_argument("--full", action="store_true", help="no truncar el texto destilado")
     args = p.parse_args()
 
-    path = settings.distillations_path
+    path = settings.pilot_read_path("distillations.parquet")
     if not path.exists():
         raise SystemExit(f"No existe {path}. Corre primero scripts/run_distillation.py")
 
@@ -43,7 +43,7 @@ def main() -> None:
     n_fb = int(df["fallback"].sum())
 
     # cobertura respecto al piloto.
-    pilot = pd.read_parquet(settings.pilot_splits_path).drop_duplicates(subset="Bug Id")
+    pilot = pd.read_parquet(settings.pilot_read_path("splits.parquet")).drop_duplicates(subset="Bug Id")
     n_pilot = pilot["Bug Id"].nunique()
     pendientes = n_pilot - n_unique
 

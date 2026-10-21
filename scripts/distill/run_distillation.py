@@ -48,7 +48,7 @@ def main() -> None:
 
     settings.pilot_dir.mkdir(parents=True, exist_ok=True)
 
-    pilot = pd.read_parquet(settings.pilot_splits_path)
+    pilot = pd.read_parquet(settings.pilot_read_path("splits.parquet"))
     pilot = pilot.drop_duplicates(subset="Bug Id")  # por si splits trae bug_ids repetidos
     bug_ids = set(pilot["Bug Id"].tolist())
     bugs = loader.load_bugs(
@@ -63,8 +63,9 @@ def main() -> None:
 
     # cache existente (reanudable).
     done: dict[int, dict] = {}
-    if settings.distillations_path.exists():
-        cached = pd.read_parquet(settings.distillations_path)
+    distillations_path = settings.pilot_read_path("distillations.parquet")
+    if distillations_path.exists():
+        cached = pd.read_parquet(distillations_path)
         done = {int(r["Bug Id"]): r.to_dict() for _, r in cached.iterrows()}
         logger.info("Cache: {} bugs ya destilados.", len(done))
 

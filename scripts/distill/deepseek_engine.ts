@@ -29,6 +29,70 @@ export interface DeepSeekResult {
   usage: DeepSeekUsage;
 }
 
+export interface BatchDistillationConfig {
+  concurrency: number;
+  checkpointPath: string;
+  flushEvery: number;
+  breakerThreshold: number;
+  outputDirectory: string;
+  splitName: string;
+}
+
+export interface BatchDistillationAdapters<Row, RecordType> {
+  id(row: Row): string;
+  distill(row: Row): Promise<{ distillation: Distillation; promptTokens: number; completionTokens: number; cacheHitTokens: number }>;
+  makeRecord(row: Row, result: { distillation: Distillation; promptTokens: number; completionTokens: number; cacheHitTokens: number }, latencyMs: number): RecordType;
+  append(path: string, record: RecordType): Promise<void>;
+  flush(path: string, outDir: string, split: string): Promise<void>;
+  sleep?: (milliseconds: number) => Promise<void>;
+  now?: () => number;
+  onFallback?(consecutive: number, row: Row): void;
+  onBreaker?(consecutive: number): void;
+  afterRecord?(completed: number, row: Row, unassignedRows: number): Promise<void> | void;
+}
+
+/** Runs in-memory rows with per-invocation worker, breaker and checkpoint state. */
+export async function runBatchDistillation<Row, RecordType>(
+  rows: readonly Row[],
+  config: BatchDistillationConfig,
+  adapters: BatchDistillationAdapters<Row, RecordType>,
+): Promise<{ completed: number; fallbacks: number; aborted: boolean }> {
+  const breaker = new CircuitBreaker(config.breakerThreshold);
+  const now = adapters.now ?? (() => performance.now());
+  let next = 0;
+  let completed = 0;
+  let fallbacks = 0;
+  let aborted = false;
+  const worker = async () => {
+    while (!aborted) {
+      const index = next++;
+      if (index >= rows.length) return;
+      const row = rows[index];
+      const start = now();
+      const result = await adapters.distill(row);
+      const record = adapters.makeRecord(row, result, Math.round(now() - start));
+      await adapters.append(config.checkpointPath, record);
+      completed++;
+      if (result.distillation._fallback) {
+        fallbacks++;
+        const tripped = breaker.recordFailure();
+        adapters.onFallback?.(breaker.failures, row);
+        if (tripped) {
+          aborted = true;
+          adapters.onBreaker?.(breaker.failures);
+        }
+      } else breaker.recordSuccess();
+      if (completed % Math.max(1, config.flushEvery) === 0 || completed === rows.length || aborted) {
+        await adapters.flush(config.checkpointPath, config.outputDirectory, config.splitName);
+      }
+      await adapters.afterRecord?.(completed, row, Math.max(0, rows.length - next));
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(config.concurrency, rows.length) }, worker));
+  await adapters.flush(config.checkpointPath, config.outputDirectory, config.splitName);
+  return { completed, fallbacks, aborted };
+}
+
 export function isValid(d: any): d is Distillation {
   return (
     d &&
@@ -112,6 +176,25 @@ export class CircuitBreaker {
   }
 }
 
+export interface DeepSeekRetryProfile {
+  /** Total HTTP attempts. The default preserves the historical engine contract. */
+  attempts?: number;
+  /** Legacy runners sleep before each retry, with their original randomized formula. */
+  backoff?: 'engine' | 'runner-legacy';
+  /** Runner cache-miss accounting intentionally uses `reported || inferred`. */
+  cacheMiss?: 'engine-nullish' | 'runner-legacy-or';
+  retryEmptyResponse?: boolean;
+  maxErrorBodyChars?: number;
+  maxRetryErrorBodyChars?: number;
+}
+
+export interface DeepSeekDependencies {
+  fetch?: typeof fetch;
+  sleep?: (milliseconds: number) => Promise<void>;
+  now?: () => number;
+  random?: () => number;
+}
+
 export async function callDeepSeekWithRetry(options: {
   apiKey: string;
   baseUrl: string;
@@ -120,83 +203,81 @@ export async function callDeepSeekWithRetry(options: {
   userPrompt: string;
   enableThinking?: boolean;
   maxRetries?: number;
+  profile?: DeepSeekRetryProfile;
+  dependencies?: DeepSeekDependencies;
 }): Promise<DeepSeekResult> {
-  const {
-    apiKey,
-    baseUrl,
-    model,
-    systemMessage,
-    userPrompt,
-    enableThinking = false,
-    maxRetries = 4,
-  } = options;
-
+  const { apiKey, baseUrl, model, systemMessage, userPrompt, enableThinking = false, maxRetries = 4 } = options;
+  const profile = options.profile ?? {};
+  const deps = options.dependencies ?? {};
+  const request = deps.fetch ?? globalThis.fetch;
+  const sleep = deps.sleep ?? ((milliseconds: number) => Bun.sleep(milliseconds));
+  const now = deps.now ?? (() => performance.now());
+  const random = deps.random ?? Math.random;
+  const attempts = profile.attempts ?? maxRetries;
   let delay = 1000;
-  let lastErr: any = null;
+  let lastErr: unknown = new Error('DeepSeek request failed');
 
-  for (let attempt = 1; attempt <= maxRetries; attempt++) {
-    const t0 = performance.now();
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    if (profile.backoff === 'runner-legacy' && attempt > 0) {
+      await sleep(Math.min(1000 * 2 ** attempt + Math.floor(random() * 500), 10000));
+    }
+    const t0 = now();
     try {
-      const bodyPayload: any = {
+      const bodyPayload: Record<string, unknown> = {
         model,
-        messages: [
-          { role: 'system', content: systemMessage },
-          { role: 'user', content: userPrompt },
-        ],
+        messages: [{ role: 'system', content: systemMessage }, { role: 'user', content: userPrompt }],
         temperature: 0.0,
         response_format: { type: 'json_object' },
       };
-
-      if (!enableThinking) {
-        bodyPayload.thinking = { type: 'disabled' };
+      if (profile.backoff === 'runner-legacy' || !enableThinking) {
+        bodyPayload.thinking = { type: enableThinking ? 'enabled' : 'disabled' };
       }
-
-      const res = await fetch(`${baseUrl}/chat/completions`, {
+      const res = await request(`${baseUrl.replace(/\/+$/, '')}/chat/completions`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${apiKey}`,
-        },
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
         body: JSON.stringify(bodyPayload),
       });
-
-      const latency_ms = Math.round(performance.now() - t0);
-
+      const latencyMs = Math.round(now() - t0);
       if (res.status === 429 || res.status >= 500) {
-        const errText = await res.text();
-        lastErr = new Error(`HTTP ${res.status}: ${errText}`);
-        await Bun.sleep(delay);
+        const errText = await res.text().catch(() => '');
+        const maximum = profile.maxRetryErrorBodyChars ?? profile.maxErrorBodyChars;
+        lastErr = new Error(`HTTP ${res.status}: ${maximum === undefined ? errText : errText.slice(0, maximum)}`);
+        if (profile.backoff !== 'runner-legacy') await sleep(delay);
         delay *= 2;
         continue;
       }
-
       if (!res.ok) {
         const errText = await res.text();
-        throw new Error(`HTTP ${res.status}: ${errText}`);
+        const maximum = profile.maxErrorBodyChars;
+        throw new Error(`HTTP ${res.status}: ${maximum === undefined ? errText : errText.slice(0, maximum)}`);
       }
-
       const data: any = await res.json();
       const content = data.choices?.[0]?.message?.content ?? '';
+      if (profile.retryEmptyResponse && !content) throw new Error('Respuesta de DeepSeek vacía o sin contenido');
       const usage = data.usage ?? {};
-
+      const prompt = usage.prompt_tokens ?? 0;
+      const hit = usage.prompt_cache_hit_tokens ?? 0;
+      const inferredMiss = Math.max(0, prompt - hit);
+      const reportedMiss = usage.prompt_cache_miss_tokens;
       return {
         text: content,
         usage: {
-          prompt_tokens: usage.prompt_tokens ?? 0,
+          prompt_tokens: prompt,
           completion_tokens: usage.completion_tokens ?? 0,
-          cache_hit_tokens: usage.prompt_cache_hit_tokens ?? 0,
-          cache_miss_tokens: usage.prompt_cache_miss_tokens ?? (usage.prompt_tokens ?? 0),
-          latency_ms,
+          cache_hit_tokens: hit,
+          cache_miss_tokens: profile.cacheMiss === 'runner-legacy-or'
+            ? (reportedMiss || inferredMiss)
+            : (reportedMiss ?? prompt),
+          latency_ms: latencyMs,
         },
       };
-    } catch (err: any) {
+    } catch (err) {
       lastErr = err;
-      if (attempt < maxRetries) {
-        await Bun.sleep(delay);
+      if (attempt + 1 < attempts && profile.backoff !== 'runner-legacy') {
+        await sleep(delay);
         delay *= 2;
       }
     }
   }
-
   throw lastErr;
 }
