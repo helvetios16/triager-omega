@@ -17,15 +17,14 @@ Config por defecto = la de TriagerX para OpenJ9 (`triagerx_config.yaml`):
 Flags para ablar cada pieza (p.ej. `--ip-c 0` para apagar contribution).
 
 Uso (tras correr scripts/mine_openj9_timelines.py):
-    uv run python scripts/eval_openj9_ibr.py
-    uv run python scripts/eval_openj9_ibr.py --ip-c 0          # ablación: sin contribution
+    uv run python scripts/benchmarks/openj9/eval_openj9_ibr.py
+    uv run python scripts/benchmarks/openj9/eval_openj9_ibr.py --ip-c 0  # ablación: sin contribution
 """
 
 from __future__ import annotations
 
 import argparse
 import json
-from collections import defaultdict
 
 import numpy as np
 import pandas as pd
@@ -33,7 +32,7 @@ import torch
 from loguru import logger
 
 from triager_omega.config import Settings
-from triager_omega.modules.ibr import InteractionRecommender
+from triager_omega.modules.ibr import InteractionIndex, InteractionRecommender, interaction_table_from_rows
 
 
 def _label_encoder(train: pd.DataFrame, test: pd.DataFrame) -> dict[str, int]:
@@ -44,12 +43,8 @@ def _label_encoder(train: pd.DataFrame, test: pd.DataFrame) -> dict[str, int]:
 def _interaction_table(inter_path, issue_ids: set[int]) -> dict:
     inter = pd.read_parquet(inter_path)
     inter = inter[inter["issue_number"].isin(issue_ids)].dropna(subset=["timestamp"])
-    table: dict[int, list] = defaultdict(list)
-    for n, dev, kind, ts in inter[["issue_number", "dev", "kind", "timestamp"]].itertuples(
-        index=False, name=None
-    ):
-        table[int(n)].append((dev, kind, ts))  # dev = login (str), igual que `owner`
-    return dict(table)
+    rows = ((int(n), dev, kind, ts) for n, dev, kind, ts in inter[["issue_number", "dev", "kind", "timestamp"]].itertuples(index=False, name=None))
+    return interaction_table_from_rows(rows, issue_ids)
 
 
 def run(args: argparse.Namespace) -> dict:
@@ -75,16 +70,13 @@ def run(args: argparse.Namespace) -> dict:
     logger.info("OpenJ9 | train={} test={} devs(owner)={}", len(train), len(test), len(le))
 
     ibr = InteractionRecommender(cfg=cfg)
-    ibr._active = set(le)
 
     # Índice = train. Embebe el texto (mismo SBERT que TriagerX: all-mpnet-base-v2).
-    ibr._train_bug_ids = train["issue_number"].to_numpy()
-    emb = ibr._sbert().encode(
-        train["text"].fillna("").tolist(), batch_size=64,
-        convert_to_numpy=True, normalize_embeddings=True, show_progress_bar=True,
-    )
-    ibr._train_embeddings = torch.as_tensor(emb, dtype=torch.float32)
-    ibr._interactions = _interaction_table(inter_path, set(int(n) for n in ibr._train_bug_ids))
+    train_ids = train["issue_number"].to_numpy()
+    emb = ibr.encode_texts(train["text"].fillna("").tolist(), show_progress_bar=True)
+    interactions = _interaction_table(inter_path, set(int(n) for n in train_ids))
+    index = InteractionIndex(train_ids, set(le), interactions)
+    ibr.set_index(index)
 
     meta = (
         pd.read_parquet(meta_path)
@@ -92,11 +84,8 @@ def run(args: argparse.Namespace) -> dict:
     )
 
     # Queries = test.
-    q_emb = ibr._sbert().encode(
-        test["text"].fillna("").tolist(), batch_size=64,
-        convert_to_numpy=True, normalize_embeddings=True, show_progress_bar=True,
-    )
-    q_emb = torch.as_tensor(q_emb, dtype=torch.float32)
+    q_emb = torch.as_tensor(ibr.encode_texts(test["text"].fillna("").tolist()), dtype=torch.float32)
+    train_emb_t = torch.as_tensor(emb, dtype=torch.float32)
 
     ks = (1, 3, 5, 10)
     ranks, signaled = [], []
@@ -104,7 +93,9 @@ def run(args: argparse.Namespace) -> dict:
         t_now = meta.get(int(row.issue_number), None)
         if pd.isna(t_now):
             t_now = None
-        nis = ibr._score(q_emb[i : i + 1], t_now)
+        from sentence_transformers import util
+        sims = util.cos_sim(q_emb[i:i + 1], train_emb_t)[0]
+        nis = ibr.score_similarities(sims.cpu().numpy(), t_now)
         true = row.owner
         order = sorted(nis.items(), key=lambda kv: (-kv[1], kv[0]))
         rank = next((r for r, (d, _) in enumerate(order) if d == true), len(order))

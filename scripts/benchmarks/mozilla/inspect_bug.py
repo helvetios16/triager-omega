@@ -88,7 +88,7 @@ def main() -> None:
     print("\n" + "#" * 74)
     print("#  FUENTE 2 — gecko-dev (repo_interactions): commits / reviews")
     print("#" * 74)
-    ri = pd.read_parquet(settings.artifacts_dir / "repo_interactions.parquet")
+    ri = pd.read_parquet(settings.mozilla_read_path("repo_interactions.parquet"))
     gk = ri[ri["bug_id"] == bug].sort_values("timestamp").drop_duplicates()
     if gk.empty:
         print("  (sin commits/reviews para este bug)")
@@ -103,7 +103,7 @@ def main() -> None:
     print("\n" + "#" * 74)
     print("#  FUENTE 3 — discussion_interactions: comentaristas (limpios)")
     print("#" * 74)
-    di = pd.read_parquet(settings.artifacts_dir / "discussion_interactions.parquet")
+    di = pd.read_parquet(settings.mozilla_read_path("discussion_interactions.parquet"))
     dd = di[di["bug_id"] == bug].sort_values("timestamp").copy()
     if dd.empty:
         print("  (este bug no tiene comentarios en el dump, o todos eran bots)")

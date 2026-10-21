@@ -74,7 +74,8 @@ def main() -> None:
     disc["kind"] = "discussion"
     disc = disc[["bug_id", "Contributor Id", "kind", "timestamp"]]
 
-    out_path = settings.artifacts_dir / "discussion_interactions.parquet"
+    out_path = settings.discussion_interactions_path
+    out_path.parent.mkdir(parents=True, exist_ok=True)
     disc.to_parquet(out_path, index=False)
 
     logger.info("== Resumen ==")

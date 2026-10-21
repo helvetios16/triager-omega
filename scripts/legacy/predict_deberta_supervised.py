@@ -44,7 +44,7 @@ class CbrPredictor:
         self.model.to(self.device).eval()
 
         self.label_encoder: dict[str, int] = json.loads(
-            cfg.pilot_label_encoder_path.read_text(encoding="utf-8")
+            cfg.pilot_read_path("label_encoder.json").read_text(encoding="utf-8")
         )
         # columna class_idx -> Contributor Id (para mapear con el IBR).
         self.idx2dev = {idx: int(dev) for dev, idx in self.label_encoder.items()}

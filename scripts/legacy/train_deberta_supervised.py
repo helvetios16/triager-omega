@@ -46,9 +46,9 @@ def build_dataframe(text_mode: str = "both") -> tuple[pd.DataFrame, dict[str, in
     """Construye el df de entrenamiento del piloto con el texto según `text_mode`:
     'raw' (solo crudo), 'distilled' (solo destilado) o 'both' (concatenado)."""
     label_encoder: dict[str, int] = json.loads(
-        settings.pilot_label_encoder_path.read_text(encoding="utf-8")
+        settings.pilot_read_path("label_encoder.json").read_text(encoding="utf-8")
     )
-    splits = pd.read_parquet(settings.pilot_splits_path).drop_duplicates(subset="Bug Id")
+    splits = pd.read_parquet(settings.pilot_read_path("splits.parquet")).drop_duplicates(subset="Bug Id")
 
     bugs = loader.load_bugs(columns=["Bug Id", "Summary", "Product", "Component"])
     bugs = bugs.drop_duplicates(subset="Bug Id")
@@ -60,8 +60,9 @@ def build_dataframe(text_mode: str = "both") -> tuple[pd.DataFrame, dict[str, in
     df["raw"] = df["Summary"] + " [SEP] " + df["Product"] + " " + df["Component"]
 
     # texto destilado (otra vista) desde el parquet de la etapa 2.
-    if settings.distillations_path.exists():
-        dist = pd.read_parquet(settings.distillations_path)[["Bug Id", "distilled_text"]]
+    distillations_path = settings.pilot_read_path("distillations.parquet")
+    if distillations_path.exists():
+        dist = pd.read_parquet(distillations_path)[["Bug Id", "distilled_text"]]
         df = df.merge(dist.drop_duplicates("Bug Id"), on="Bug Id", how="left")
     else:
         df["distilled_text"] = ""

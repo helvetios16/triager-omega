@@ -37,7 +37,7 @@ Generación, validación y consolidación de la taxonomía diagnóstica `[FL][SY
 ### `mozilla/` (Mozilla Bugzilla)
 - **`cbr_retrieval_pilot.py`**: Evaluación del CBR zero-shot sobre el piloto de 20 desarrolladores activos.
 - **`build_discussion_interactions.py`**: Procesa comentarios de bugs para construir la matriz de interacción social.
-- **`balance_experiment.py`**: Experimento de ablación para mitigar la cola larga de asignaciones.
+- **`balance_experiment.py`**: Experimento histórico/surrogate de cola larga con TF-IDF y clasificación lineal; no forma parte del CBR de recuperación activo.
 - **`inspect_bug.py`**: Auditoría de la relación entre un bug y sus 3 fuentes de interacción.
 - **`eda.py`**: Estadísticas descriptivas del corpus curado de Mozilla.
 

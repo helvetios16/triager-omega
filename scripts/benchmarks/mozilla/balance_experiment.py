@@ -1,4 +1,6 @@
-"""Experimento de balanceo de la cola larga para el CBR (PLAN §11.3 / §14 Semana 3).
+"""HISTÓRICO / SURROGATE: experimento de balanceo, no parte del pipeline activo.
+
+Experimento de balanceo de la cola larga para el CBR (PLAN §11.3 / §14 Semana 3).
 
 Compara, con MISMO modelo + seed + split, cinco estrategias de balanceo y mide
 Hit@K y MRR SEGMENTADOS POR BUCKET DE FRECUENCIA del desarrollador (cola / cuerpo
@@ -13,11 +15,10 @@ modelo):
   undersample   — recorta cada dev a C_MAX bugs para aplanar la distribución.
   combined      — multi_view + inverse_freq (confirma que se apilan).
 
-NOTAS DE SURROGATE (para correr HOY, sin esperar a los módulos 2/3):
-  * Clasificador: TF-IDF + clasificador lineal (sample_weight nativo). El arnés es
-    agnóstico al modelo; en producción se cambia el backend por DeBERTa (Módulo 3)
-    sin tocar estrategias ni métricas. Las estrategias mueven datos, no el modelo,
-    así que su comparación relativa es informativa con cualquier clasificador.
+NOTAS HISTÓRICAS DEL SURROGATE (no describen la arquitectura vigente):
+  * Clasificador: TF-IDF + clasificador lineal (sample_weight nativo). La propuesta
+    original de sustituirlo por DeBERTa fue descartada. Este experimento no valida
+    las estrategias para el CBR de recuperación activo; requeriría otra evaluación.
   * Texto: crudo "Summary [SEP] Product Component" (la destilación del Módulo 2 aún
     no está corrida; cuando lo esté, basta cambiar build_base_frame()).
   * multi_view: hasta tener la destilación LLM de Gemma, las vistas se generan por
@@ -25,8 +26,8 @@ NOTAS DE SURROGATE (para correr HOY, sin esperar a los módulos 2/3):
     varias vistas del mismo bug rompen la memorización del string exacto en la cola.
 
 Ejecutar:
-    uv run python scripts/balance_experiment.py                  # full train (64k)
-    uv run python scripts/balance_experiment.py --max-train 20000  # rápido
+    uv run python scripts/benchmarks/mozilla/balance_experiment.py
+    uv run python scripts/benchmarks/mozilla/balance_experiment.py --max-train 20000
 """
 
 from __future__ import annotations
@@ -57,9 +58,9 @@ def build_base_frame() -> pd.DataFrame:
     Devuelve un df con: text, label, split, freq_train, bucket.
     """
     label_encoder: dict[str, int] = json.loads(
-        settings.label_encoder_path.read_text(encoding="utf-8")
+        settings.mozilla_read_path("label_encoder.json").read_text(encoding="utf-8")
     )
-    splits = pd.read_parquet(settings.splits_path)
+    splits = pd.read_parquet(settings.mozilla_read_path("splits.parquet"))
     bugs = loader.load_bugs(columns=["Bug Id", "Summary", "Product", "Component"])
     df = splits.merge(bugs, on="Bug Id", how="left")
 
