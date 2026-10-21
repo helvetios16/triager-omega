@@ -12,9 +12,9 @@ wheels/
 # Secrets
 .env
 
-# Project artifacts and data
-artifacts/
-data/
+# Project artifacts and data (root only; keep src/triager_omega/data versionable)
+/artifacts/
+/data/
 *.parquet
 
 # macOS
