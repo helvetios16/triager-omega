@@ -25,7 +25,7 @@ from triager_omega.config import Settings, settings
 
 def build_pilot(cfg: Settings = settings) -> dict:
     cfg.pilot_dir.mkdir(parents=True, exist_ok=True)
-    splits = pd.read_parquet(cfg.splits_path)
+    splits = pd.read_parquet(cfg.mozilla_read_path("splits.parquet"))
     train = splits[splits["split"] == "train"]
 
     # top-N devs por frecuencia en train.

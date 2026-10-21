@@ -24,12 +24,14 @@ Réplica fiel de `triagerx/system/triagerx.py` (métodos `_get_top_k_similar_iss
 
   - **Decaimiento temporal** `exp(-λ·Δt)`. *Divergencia deliberada con TriagerX*:
     TriagerX mide Δt contra una fecha de checkpoint fija (`train_checkpoint_date`);
-    nosotros usamos `t_now = Creation Time` del bug consultado y **filtramos
-    interacciones con `t ≥ t_now`** (anti-fuga temporal, §7.6 del PLAN).
+    usamos `t_now = Creation Time` del bug consultado y omitimos interacciones
+    `t ≥ t_now`. Assignment usa `creation_time` como proxy temporal, así que esto
+    no constituye una garantía absoluta contra toda fuga (ver §7.6 del PLAN).
 
-  - **NIS** (min-max, Ec. 7 de TriagerX) sobre el vector completo de devs activos:
-    los que no interactuaron entran como 0 → min=0 → `NIS = IS / max(IS)`. La
-    agregación `FS = NPS + W_f·NIS` (Ec. 8) vive en el Módulo 5 (aggregator).
+  - **NIS** (Ec. 7 de TriagerX) sobre el vector completo de candidatos activos:
+    los que no interactuaron entran como 0. La implementación divide IS por su
+    máximo positivo (div-max; no min-max). La agregación `FS = NPS + W_f·NIS`
+    (Ec. 8) vive en el Módulo 5 (aggregator).
 
 CLI:
     uv run python -m triager_omega.modules.ibr build          # embebe + guarda índice
@@ -42,7 +44,9 @@ from __future__ import annotations
 import argparse
 import json
 import math
+from dataclasses import dataclass
 from collections import defaultdict
+from collections.abc import Sequence, Set as AbstractSet
 
 import numpy as np
 import pandas as pd
@@ -55,6 +59,103 @@ from triager_omega.data import loader
 # Tipos de interacción que comparten el peso `ip_contribution` (commit + review),
 # igual que TriagerX agrupa pull_request + commits en contribution_score.
 _CONTRIBUTION_KINDS = frozenset({"commit", "review", "pull_request", "commits"})
+
+
+@dataclass(frozen=True)
+class IbrConfig:
+    # Canonical Settings defaults: 20 similar cases and cosine threshold 0.6.
+    top_k: int = 20
+    tau: float = 0.6
+    decay_lambda: float = 0.01
+    ip_contribution: float = 1.5
+    ip_assignment: float = 0.5
+    ip_discussion: float = 0.1
+
+
+@dataclass
+class InteractionIndex:
+    """Corpus-independent IBR data; ``case_ids`` align with similarity columns."""
+    case_ids: np.ndarray
+    active_candidates: Sequence | AbstractSet  # ordered sequence preferred; sets remain accepted for compatibility
+    interactions: dict
+
+
+def interaction_table_from_rows(rows, case_ids=None) -> dict:
+    """Construye tabla genérica desde filas (case_id, dev, kind, timestamp)."""
+    allowed = None if case_ids is None else set(case_ids)
+    table = defaultdict(list)
+    for case_id, dev, kind, timestamp in rows:
+        if allowed is None or case_id in allowed:
+            table[case_id].append((dev, kind, timestamp))
+    return dict(table)
+
+
+class IbrScorer:
+    """Scoring puro sobre similitudes ya calculadas, sin encoder ni corpus."""
+    def __init__(self, config: IbrConfig, index: InteractionIndex):
+        self.config, self.index = config, index
+
+    def interaction_point(self, kind: str) -> float:
+        if kind in _CONTRIBUTION_KINDS:
+            return self.config.ip_contribution
+        if kind == "assignment":
+            return self.config.ip_assignment
+        return self.config.ip_discussion
+
+    def decay(self, ts, t_now) -> float:
+        if t_now is None:
+            return 1.0
+        days = (t_now - ts).days
+        if days < 0:
+            return 0.0
+        return math.exp(-self.config.decay_lambda * days)
+
+    def normalize(self, values: dict) -> dict:
+        nis = {dev: 0.0 for dev in self.index.active_candidates}
+        if not values:
+            return nis
+        maximum = max(values.values())
+        if maximum <= 0:
+            return nis
+        for dev, score in values.items():
+            nis[dev] = score / maximum
+        return nis
+
+    def score(self, similarities, t_now=None, *, policy="semantic") -> dict:
+        """Score un query. semantic conserva torch.topk/umbral; lexical argpartition/>0."""
+        sims = np.asarray(similarities)
+        if sims.ndim != 1:
+            raise ValueError(f"similarities debe ser un vector 1D; recibido ndim={sims.ndim}.")
+        if len(sims) != len(self.index.case_ids):
+            raise ValueError(
+                f"similarities y case_ids deben tener igual longitud; "
+                f"recibido {len(sims)} y {len(self.index.case_ids)}."
+            )
+        k = min(self.config.top_k, len(sims))
+        if k == 0:
+            return self.normalize({})
+        if policy == "semantic":
+            vals, indices = torch.topk(torch.as_tensor(sims), k)
+            selected = zip(vals.cpu().numpy(), indices.cpu().numpy())
+        elif policy == "lexical":
+            indices = np.argpartition(-sims, kth=k - 1)[:k]
+            selected = ((sims[i], i) for i in indices)
+        else:
+            raise ValueError("policy debe ser 'semantic' o 'lexical'")
+        values = {}
+        for similarity, idx in selected:
+            similarity = float(similarity)
+            if policy == "semantic" and similarity < self.config.tau:
+                continue
+            if policy == "lexical" and similarity <= 0:
+                continue
+            for dev, kind, ts in self.index.interactions.get(self.index.case_ids[int(idx)], ()):
+                if dev not in self.index.active_candidates:
+                    continue
+                if t_now is not None and ts >= t_now:
+                    continue
+                values[dev] = values.get(dev, 0.0) + similarity * self.interaction_point(kind) * self.decay(ts, t_now)
+        return self.normalize(values)
 
 
 # --------------------------------------------------------------------------- #
@@ -80,9 +181,9 @@ def load_pilot_text(text_mode: str = "distilled", cfg: Settings = settings):
     defecto el destilado (§7.4); el CBR usa la vista con la que se entrenó.
     """
     label_encoder: dict[str, int] = json.loads(
-        cfg.pilot_label_encoder_path.read_text(encoding="utf-8")
+        cfg.pilot_read_path("label_encoder.json").read_text(encoding="utf-8")
     )
-    splits = pd.read_parquet(cfg.pilot_splits_path).drop_duplicates(subset="Bug Id")
+    splits = pd.read_parquet(cfg.pilot_read_path("splits.parquet")).drop_duplicates(subset="Bug Id")
 
     bugs = loader.load_bugs(columns=["Bug Id", "Summary", "Product", "Component"])
     bugs = bugs.drop_duplicates(subset="Bug Id")
@@ -92,8 +193,9 @@ def load_pilot_text(text_mode: str = "distilled", cfg: Settings = settings):
         df[col] = df[col].fillna("").astype(str)
     df["raw"] = df["Summary"] + " [SEP] " + df["Product"] + " " + df["Component"]
 
-    if cfg.distillations_path.exists():
-        dist = pd.read_parquet(cfg.distillations_path)[["Bug Id", "distilled_text"]]
+    distillations_path = cfg.pilot_read_path("distillations.parquet")
+    if distillations_path.exists():
+        dist = pd.read_parquet(distillations_path)[["Bug Id", "distilled_text"]]
         df = df.merge(dist.drop_duplicates("Bug Id"), on="Bug Id", how="left")
     else:
         df["distilled_text"] = ""
@@ -132,18 +234,18 @@ class InteractionRecommender:
         """`(bug_id → [(dev_id, kind, timestamp)])`, solo para los `bug_ids` del índice."""
         frames = []
 
-        repo = pd.read_parquet(self.cfg.repo_interactions_path)[
+        repo = pd.read_parquet(self.cfg.mozilla_read_path("repo_interactions.parquet"))[
             ["bug_id", "Contributor Id", "kind", "timestamp"]
         ].rename(columns={"Contributor Id": "dev"})
         frames.append(repo)
 
-        disc = pd.read_parquet(self.cfg.discussion_interactions_path)[
+        disc = pd.read_parquet(self.cfg.mozilla_read_path("discussion_interactions.parquet"))[
             ["bug_id", "Contributor Id", "kind", "timestamp"]
         ].rename(columns={"Contributor Id": "dev"})
         frames.append(disc)
 
         # assignment: el `Assigned To` de cada bug, fechado en su Creation Time.
-        spl = pd.read_parquet(self.cfg.splits_path)[["Bug Id", "contributor_id", "creation_time"]]
+        spl = pd.read_parquet(self.cfg.mozilla_read_path("splits.parquet"))[["Bug Id", "contributor_id", "creation_time"]]
         spl = spl.rename(columns={"Bug Id": "bug_id", "contributor_id": "dev", "creation_time": "timestamp"})
         spl["kind"] = "assignment"
         frames.append(spl[["bug_id", "dev", "kind", "timestamp"]])
@@ -190,77 +292,67 @@ class InteractionRecommender:
 
     # ---- load: restaura embeddings persistidos y reconstruye la tabla ----
     def load(self) -> "InteractionRecommender":
-        if not self.cfg.ibr_embeddings_path.exists():
+        embeddings_path = self.cfg.pilot_read_path("ibr_embeddings.npy")
+        bug_ids_path = self.cfg.pilot_read_path("ibr_bug_ids.npy")
+        if not embeddings_path.exists():
             raise FileNotFoundError(
-                f"No existe {self.cfg.ibr_embeddings_path}. Corre primero "
+                f"No existe {embeddings_path}. Corre primero "
                 "`python -m triager_omega.modules.ibr build`."
             )
         _, label_encoder = load_pilot_text(self.text_mode, self.cfg)
         self._active = {int(d) for d in label_encoder}
-        emb = np.load(self.cfg.ibr_embeddings_path)
+        emb = np.load(embeddings_path)
         self._train_embeddings = torch.as_tensor(emb, dtype=torch.float32)
-        self._train_bug_ids = np.load(self.cfg.ibr_bug_ids_path)
+        self._train_bug_ids = np.load(bug_ids_path)
         self._interactions = self._build_interaction_table(set(int(b) for b in self._train_bug_ids))
         logger.info("Índice IBR cargado: {} bugs.", len(self._train_bug_ids))
         return self
 
+    def _scorer(self) -> IbrScorer:
+        config = IbrConfig(self.cfg.ibr_top_k_retrieve, self.cfg.ibr_tau, self.cfg.ibr_lambda,
+                           self.cfg.ip_contribution, self.cfg.ip_assignment, self.cfg.ip_discussion)
+        return IbrScorer(config, InteractionIndex(self._train_bug_ids, self._active, self._interactions))
+
+    def set_index(self, index: InteractionIndex) -> "InteractionRecommender":
+        self._train_bug_ids = np.asarray(index.case_ids)
+        self._active = index.active_candidates
+        self._interactions = index.interactions
+        return self
+
+    def score_similarities(self, similarities, t_now=None, *, policy="semantic") -> dict:
+        return self._scorer().score(similarities, t_now, policy=policy)
+
+    def cosine_similarities(self, query_embedding):
+        """Calcula la fila de similitudes con la API cos_sim de Sentence-Transformers."""
+        from sentence_transformers import util
+        return util.cos_sim(query_embedding, self._train_embeddings)[0]
+
+    def score_embedding(self, query_embedding, t_now=None) -> dict:
+        similarities = self.cosine_similarities(query_embedding)
+        return self.score_similarities(similarities.cpu().numpy(), t_now)
+
+    def encode_texts(self, texts, *, batch_size=64, show_progress_bar=False):
+        """Codifica usando el encoder IBR (independiente del encoder CBR)."""
+        return self._sbert().encode(texts, batch_size=batch_size, convert_to_numpy=True,
+                                    normalize_embeddings=True, show_progress_bar=show_progress_bar)
+
     # ---- TriagerX: _get_contribution_point ----
     def _ip(self, kind: str) -> float:
-        if kind in _CONTRIBUTION_KINDS:
-            return self.cfg.ip_contribution
-        if kind == "assignment":
-            return self.cfg.ip_assignment
-        return self.cfg.ip_discussion  # discussion
+        return self._scorer().interaction_point(kind)
 
     # ---- TriagerX: _calculate_time_decay (con t_now por consulta) ----
     def _decay(self, ts: pd.Timestamp, t_now: pd.Timestamp | None) -> float:
-        if t_now is None:
-            return 1.0
-        days = (t_now - ts).days
-        if days < 0:  # interacción futura: ya filtrada, pero defensa extra
-            return 0.0
-        return math.exp(-self.cfg.ibr_lambda * days)
+        return self._scorer().decay(ts, t_now)
 
     # ---- scoring desde un embedding ya calculado ----
     def _score(self, query_emb: torch.Tensor, t_now: pd.Timestamp | None) -> dict[int, float]:
-        from sentence_transformers import util
+        cos = self.cosine_similarities(query_emb)
+        return self.score_similarities(cos.cpu().numpy(), t_now)
 
-        cos = util.cos_sim(query_emb, self._train_embeddings)[0]  # [N]
-        k = min(self.cfg.ibr_top_k_retrieve, cos.shape[0])
-        vals, idxs = torch.topk(cos, k)
-        vals = vals.cpu().numpy()
-        idxs = idxs.cpu().numpy()
-
-        # IS[dev] += s_j · IP[kind] · exp(-λ·Δt)   (Algoritmo 1 de TriagerX)
-        interaction_score: dict[int, float] = {}
-        for sim, idx in zip(vals, idxs):
-            if sim < self.cfg.ibr_tau:
-                continue
-            bug_id = int(self._train_bug_ids[idx])
-            for dev, kind, ts in self._interactions.get(bug_id, ()):  # noqa: B007
-                if dev not in self._active:
-                    continue
-                if t_now is not None and ts >= t_now:  # anti-fuga temporal (§7.6)
-                    continue
-                interaction_score[dev] = interaction_score.get(dev, 0.0) + (
-                    float(sim) * self._ip(kind) * self._decay(ts, t_now)
-                )
-        return self._normalize_nis(interaction_score)
-
-    # ---- NIS (Ec. 7): min-max sobre el vector completo de devs activos ----
+    # ---- NIS (Ec. 7): división por el máximo positivo sobre devs activos ----
     def _normalize_nis(self, interaction_score: dict[int, float]) -> dict[int, float]:
-        """Réplica de `_normalize` de TriagerX: los devs sin interacción entran como
-        0 (min del vector) → `NIS = IS / max(IS)`. Devuelve NIS para *todos* los
-        devs activos (0 para los que no interactuaron)."""
-        nis = {dev: 0.0 for dev in self._active}
-        if not interaction_score:
-            return nis
-        mx = max(interaction_score.values())
-        if mx <= 0:
-            return nis
-        for dev, score in interaction_score.items():
-            nis[dev] = score / mx
-        return nis
+        """Normaliza IS por su máximo positivo y devuelve todos los candidatos activos."""
+        return self._scorer().normalize(interaction_score)
 
     # ---- API pública ----
     def predict(self, query_text: str, t_now: pd.Timestamp | None) -> dict[int, float]:

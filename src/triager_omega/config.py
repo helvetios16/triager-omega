@@ -10,6 +10,7 @@ from pathlib import Path
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from loguru import logger
 
 # Raíz del repo = dos niveles arriba de este archivo (src/triager_omega/config.py).
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -141,8 +142,7 @@ class Settings(BaseSettings):
     # ----- Directorios base por corpus experimental -----
     @property
     def mozilla_dir(self) -> Path:
-        p = self.artifacts_dir / "mozilla"
-        return p if p.exists() else self.artifacts_dir
+        return self.artifacts_dir / "mozilla"
 
     @property
     def openj9_dir(self) -> Path:
@@ -176,8 +176,29 @@ class Settings(BaseSettings):
     # ----- Rutas del piloto del CBR (Módulo 2-3) -----
     @property
     def pilot_dir(self) -> Path:
-        p = self.mozilla_dir / "pilot"
-        return p if p.exists() else (self.artifacts_dir / "pilot")
+        return self.mozilla_dir / "pilot"
+
+    def mozilla_read_path(self, filename: str) -> Path:
+        """Resuelve una lectura Mozilla canónica, con compatibilidad legacy explícita."""
+        return self._legacy_read_path(
+            self.mozilla_dir / filename, self.artifacts_dir / filename
+        )
+
+    def pilot_read_path(self, filename: str) -> Path:
+        """Resuelve una lectura del piloto, manteniendo compatibilidad legacy explícita."""
+        return self._legacy_read_path(
+            self.pilot_dir / filename, self.artifacts_dir / "pilot" / filename
+        )
+
+    @staticmethod
+    def _legacy_read_path(canonical: Path, legacy: Path) -> Path:
+        if canonical.exists() or not legacy.exists():
+            return canonical
+        logger.warning(
+            "[LEGACY_FALLBACK] usando ruta legacy {} (falta canónica {})",
+            legacy, canonical,
+        )
+        return legacy
 
     @property
     def pilot_splits_path(self) -> Path:
@@ -213,10 +234,6 @@ class Settings(BaseSettings):
         return self.pilot_dir / "ibr_bug_ids.npy"
 
     # ----- Rutas OpenJ9 (validación del IBR) -----
-    @property
-    def openj9_dir(self) -> Path:
-        return self.artifacts_dir / "openj9"
-
     @property
     def openj9_train_csv(self) -> Path:
         return self.triagerx_repo / "assets" / "openj9_train_17.csv"
