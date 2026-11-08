@@ -1,7 +1,8 @@
-"""Fuse raw OpenJ9 CBR vote-sum scores with exported original TriagerX IBR NIS.
+"""Fuse an explicitly selected OpenJ9 CBR text view with exported original TriagerX IBR NIS.
 
-Val selects one fixed linear-fusion weight; test is evaluated only at that
-weight. The caller supplies the exact temporal split's raw IBR export.
+IBR source CSVs remain fixed; separate CBR view CSVs must match their issue-ID
+order and owners. Validation selects a fixed fusion weight; test sees only that
+weight. Dense and CbrRetriever hybrid/RRF modes use sum voting.
 """
 from __future__ import annotations
 
@@ -22,7 +23,7 @@ sys.modules[_FULL_SPEC.name] = _FULL
 assert _FULL_SPEC.loader is not None
 _FULL_SPEC.loader.exec_module(_FULL)
 
-DEFAULT_WEIGHTS = [round(value, 1) for value in np.arange(0.1, 1.0001, 0.1)]
+DEFAULT_WEIGHTS = [round(value, 1) for value in np.arange(0.0, 1.0001, 0.1)]
 
 
 def _load_nis(path: Path, queries: pd.DataFrame, label_encoder: dict[str, int]) -> np.ndarray:
@@ -63,11 +64,38 @@ def _validate_export_source(payload: dict, train_path: Path, query_path: Path) -
     return policy
 
 
-def _evaluate_split(train_path: Path, query_path: Path, nis_path: Path, args, weights: list[float]):
-    train = pd.read_csv(train_path).drop_duplicates("issue_number").reset_index(drop=True)
-    query = pd.read_csv(query_path).drop_duplicates("issue_number").reset_index(drop=True)
-    if not {"issue_number", "owner", "text"}.issubset(train) or not {"issue_number", "owner", "text"}.issubset(query):
-        raise ValueError("split CSVs require issue_number, owner, and text")
+def _read_split(path: Path) -> pd.DataFrame:
+    frame = pd.read_csv(path)
+    if not {"issue_number", "owner", "text"}.issubset(frame):
+        raise ValueError(f"split CSV requires issue_number, owner, and text: {path}")
+    if frame.issue_number.isna().any() or frame.issue_number.duplicated().any():
+        raise ValueError(f"split CSV has missing or duplicate issue_number values: {path}")
+    if frame.owner.isna().any():
+        raise ValueError(f"split CSV has missing owner values: {path}")
+    frame["text"] = frame.text.fillna("").astype(str)
+    return frame.reset_index(drop=True)
+
+
+def _validate_cbr_view(ibr_frame: pd.DataFrame, cbr_frame: pd.DataFrame, split: str) -> None:
+    if ibr_frame.issue_number.tolist() != cbr_frame.issue_number.tolist():
+        raise ValueError(f"{split} CBR view issue IDs/order do not exactly match IBR source CSV")
+    if ibr_frame.owner.tolist() != cbr_frame.owner.tolist():
+        raise ValueError(f"{split} CBR view owner labels/order do not exactly match IBR source CSV")
+
+
+def _select_weight(curves: list[dict]) -> float:
+    selected = max(curves, key=lambda row: (row["metrics"]["hit@1"], row["metrics"]["mrr"], -row["weight"]))
+    return float(selected["weight"])
+
+
+def _evaluate_split(train_path: Path, query_path: Path, nis_path: Path, args, weights: list[float],
+                    cbr_train_path: Path | None = None, cbr_query_path: Path | None = None):
+    train = _read_split(train_path)
+    query = _read_split(query_path)
+    cbr_train = _read_split(cbr_train_path or train_path)
+    cbr_query = _read_split(cbr_query_path or query_path)
+    _validate_cbr_view(train, cbr_train, "train")
+    _validate_cbr_view(query, cbr_query, "query")
     payload = json.loads(nis_path.read_text(encoding="utf-8"))
     policy = _validate_export_source(payload, train_path, query_path)
     if policy == "original" and not args.allow_original_temporal:
@@ -76,13 +104,27 @@ def _evaluate_split(train_path: Path, query_path: Path, nis_path: Path, args, we
     # NIS columns missing test-only labels are explicitly zero-filled by login.
     from triager_omega.retrieval import build_label_encoder
     labels = build_label_encoder(train.owner, query.owner)
-    cfg = _FULL.EvaluationConfig(
-        cpu=args.cpu, cbr_mode="retrieval", cbr_model=args.cbr_model,
-        cbr_topk=50, cbr_tau=2.0, cbr_maxlen=384, cbr_vote="sum",
-        fusion="linear", gate=None,
-    )
+    from triager_omega.modules.aggregator import normalize_rows, rank_metrics, make_fuser
+    from triager_omega.retrieval import CbrConfig, CbrRetriever, rrf_fuse
+
     nis = _load_nis(nis_path, query, labels)
-    return _FULL.evaluate(cfg, train_df=train, test_df=query, nis=nis, fusion_weights=weights)
+    retriever = CbrRetriever(CbrConfig(
+        encoder_name=args.cbr_model, device="cpu" if args.cpu else _FULL.Settings().torch_device,
+        max_seq_length=args.cbr_maxlen, top_k=args.cbr_topk, tau=args.cbr_tau,
+        vote_strategy="sum", rrf_k=args.rrf_k,
+    ))
+    retriever.fit(cbr_train.text.tolist(), cbr_train.owner.tolist(), query.owner.tolist())
+    dense = retriever.compute_dense_sims(cbr_query.text.tolist())
+    similarities = dense if args.cbr_mode == "dense" else rrf_fuse(
+        dense, retriever.compute_lexical_sims(cbr_query.text.tolist()), k=args.rrf_k)
+    nps = normalize_rows(retriever.score_sims(similarities, top_k=args.cbr_topk,
+                                             tau=args.cbr_tau, vote_strategy="sum"), how="minmax")
+    true_idx = query.owner.map(labels).to_numpy().astype(int)
+    fuser = make_fuser(nps, nis, "linear", 60, None)
+    curves = [{"gate": None, "weight": weight, "metrics": rank_metrics(fuser(weight), true_idx)}
+              for weight in weights]
+    return {"curves": curves, "cbr_only": rank_metrics(nps, true_idx),
+            "ibr_only": rank_metrics(nis, true_idx)}
 
 
 def run(args: argparse.Namespace) -> dict:
@@ -99,6 +141,13 @@ def run(args: argparse.Namespace) -> dict:
     weights = [float(value) for value in args.weights.split(",")]
     if not weights or any(not np.isfinite(value) or value < 0 for value in weights):
         raise ValueError("--weights must be comma-separated finite nonnegative numbers")
+    cbr_paths = {}
+    for name in ("cbr_traininner_csv", "cbr_val_csv", "cbr_train_csv", "cbr_test_csv"):
+        value = getattr(args, name, None) or getattr(args, name.removeprefix("cbr_"))
+        path = Path(value)
+        if not path.is_file():
+            raise FileNotFoundError(path)
+        cbr_paths[name] = path
 
     val_train, val_query = Path(args.traininner_csv), Path(args.val_csv)
     test_train, test_query = Path(args.train_csv), Path(args.test_csv)
@@ -111,15 +160,18 @@ def run(args: argparse.Namespace) -> dict:
     if val_policy == "original" and not args.allow_original_temporal:
         raise ValueError("Refusing temporally leaky original-policy IBR exports; explicitly pass --allow-original-temporal")
 
-    val = _evaluate_split(val_train, val_query, Path(args.val_ibr), args, weights)
-    # Deterministic fixed protocol: maximize validation MRR, then Hit@1, then
-    # choose the smaller weight on exact ties. No test metric participates.
-    selected = max(val["curves"], key=lambda row: (row["metrics"]["mrr"], row["metrics"]["hit@1"], -row["weight"]))
-    selected_weight = float(selected["weight"])
-    test = _evaluate_split(test_train, test_query, Path(args.test_ibr), args, [selected_weight])
+    val = _evaluate_split(val_train, val_query, Path(args.val_ibr), args, weights,
+                          cbr_paths["cbr_traininner_csv"], cbr_paths["cbr_val_csv"])
+    # Select only on validation: maximize Hit@1, then MRR, then prefer lower weight.
+    selected_weight = _select_weight(val["curves"])
+    test = _evaluate_split(test_train, test_query, Path(args.test_ibr), args, [selected_weight],
+                           cbr_paths["cbr_train_csv"], cbr_paths["cbr_test_csv"])
     result = {
-        "protocol": "traininner->val selects fixed W_f by MRR, then Hit@1, then smaller weight; train->test evaluated only at selected weight",
-        "cbr": {"vote": "sum", "top_k": 50, "tau": 2.0, "max_length": 384, "model": args.cbr_model},
+        "protocol": "traininner->val selects fixed W_f by Hit@1, then MRR, then smaller weight; train->test evaluated only at selected weight",
+        "cbr": {"mode": args.cbr_mode, "vote": "sum", "top_k": args.cbr_topk,
+                "tau": args.cbr_tau, "max_length": args.cbr_maxlen,
+                "rrf_k": args.rrf_k if args.cbr_mode == "hybrid" else None,
+                "model": args.cbr_model},
         "ibr_temporal_policies": {"val": json.loads(Path(args.val_ibr).read_text())["temporal_policy"],
                                   "test": json.loads(Path(args.test_ibr).read_text())["temporal_policy"]},
         "weights_tested_on_validation": weights,
@@ -129,6 +181,7 @@ def run(args: argparse.Namespace) -> dict:
                  "selected_weight": selected_weight, "metrics": test["curves"][0]["metrics"]},
         "inputs": {key: str(Path(getattr(args, key))) for key in
                    ("traininner_csv", "val_csv", "train_csv", "test_csv", "val_ibr", "test_ibr")},
+        "cbr_view_inputs": {key: str(value) for key, value in cbr_paths.items()},
     }
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
@@ -145,6 +198,15 @@ def main() -> None:
     parser.add_argument("--val-ibr", required=True, help="original IBR per-query export for traininner->val")
     parser.add_argument("--test-ibr", required=True, help="original IBR per-query export for train->test")
     parser.add_argument("--cbr-model", default="sentence-transformers/all-mpnet-base-v2")
+    parser.add_argument("--cbr-mode", choices=["dense", "hybrid"], default="dense")
+    parser.add_argument("--cbr-topk", type=int, default=50)
+    parser.add_argument("--cbr-tau", type=float, default=2.0)
+    parser.add_argument("--cbr-maxlen", type=int, default=384)
+    parser.add_argument("--rrf-k", type=int, default=60)
+    parser.add_argument("--cbr-traininner-csv", help="CBR view CSV; defaults to IBR source CSV")
+    parser.add_argument("--cbr-val-csv", help="CBR view CSV; defaults to IBR source CSV")
+    parser.add_argument("--cbr-train-csv", help="CBR view CSV; defaults to IBR source CSV")
+    parser.add_argument("--cbr-test-csv", help="CBR view CSV; defaults to IBR source CSV")
     parser.add_argument("--weights", default=",".join(map(str, DEFAULT_WEIGHTS)))
     parser.add_argument("--cpu", action="store_true")
     parser.add_argument("--allow-original-temporal", action="store_true",

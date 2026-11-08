@@ -34,6 +34,8 @@ class NISAlignmentTests(unittest.TestCase):
             np.testing.assert_array_equal(aligned, [[0, 1], [1, 0]])
             with self.assertRaisesRegex(ValueError, "issue IDs/order"):
                 fuse._load_nis(path, frame.iloc[::-1], {"alice": 0, "bob": 1})
+            with self.assertRaisesRegex(ValueError, "absent from CBR label encoder"):
+                fuse._load_nis(path, frame, {"alice": 0})
 
     def test_rejects_case_collisions(self):
         import tempfile
@@ -66,22 +68,24 @@ class FusionProtocolTests(unittest.TestCase):
                 traininner_csv=paths["traininner"], val_csv=paths["val"],
                 train_csv=paths["train"], test_csv=paths["test"],
                 val_ibr=exports["val"], test_ibr=exports["test"],
-                cbr_model="local-mock-model", cpu=True, weights="0.1,0.2",
+                cbr_model="local-mock-model", cbr_mode="dense", cbr_topk=50,
+                cbr_tau=2., cbr_maxlen=384, rrf_k=60, cpu=True, weights="0,0.1,0.2",
                 allow_original_temporal=False, output=root / "fusion.json",
             )
             fake_result = {"curves": [
-                {"weight": .1, "metrics": {"mrr": .2, "hit@1": .1}},
+                {"weight": 0.0, "metrics": {"mrr": .3, "hit@1": .6}},
+                {"weight": .1, "metrics": {"mrr": .2, "hit@1": .7}},
                 {"weight": .2, "metrics": {"mrr": .8, "hit@1": .4}},
             ], "cbr_only": {"hit@1": .1}, "ibr_only": {"hit@1": .2}}
             with patch.object(fuse, "_evaluate_split", side_effect=[fake_result, {
-                    "curves": [{"weight": .2, "metrics": {"mrr": .5, "hit@1": .3}}],
+                    "curves": [{"weight": .1, "metrics": {"mrr": .5, "hit@1": .3}}],
                     "cbr_only": {"hit@1": .2}, "ibr_only": {"hit@1": .3}}]) as evaluate:
                 result = fuse.run(args)
             self.assertEqual(evaluate.call_count, 2)
-            self.assertEqual(evaluate.call_args_list[0].args[4], [.1, .2])
-            self.assertEqual(evaluate.call_args_list[1].args[4], [.2])
-            self.assertEqual(result["validation"]["selected_weight"], .2)
-            self.assertEqual(result["test"]["selected_weight"], .2)
+            self.assertEqual(evaluate.call_args_list[0].args[4], [0.0, .1, .2])
+            self.assertEqual(evaluate.call_args_list[1].args[4], [.1])
+            self.assertEqual(result["validation"]["selected_weight"], .1)
+            self.assertEqual(result["test"]["selected_weight"], .1)
             self.assertTrue(args.output.is_file())
 
     def test_run_rejects_mixed_temporal_policies(self):
