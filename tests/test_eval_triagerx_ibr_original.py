@@ -38,6 +38,28 @@ class AdaptRawIssuesTests(unittest.TestCase):
             self.assertNotIn("timeline", adapted)
             self.assertEqual(json.loads(source.read_text(encoding="utf-8")), original)
 
+    def test_converts_assignee_logins_without_modifying_source(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            raw = root / "raw"
+            raw.mkdir()
+            original = {"assignees": ["alice", {"login": "bob", "id": 42}], "timeline": []}
+            source = raw / "1.json"
+            source.write_text(json.dumps(original), encoding="utf-8")
+            module.adapt_raw_issues(raw, root / "adapted", {1})
+            converted = json.loads((root / "adapted/1.json").read_text(encoding="utf-8"))
+            self.assertEqual(converted["assignees"], [{"login": "alice"}, {"login": "bob", "id": 42}])
+            self.assertEqual(json.loads(source.read_text(encoding="utf-8")), original)
+
+    def test_rejects_invalid_assignee(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            raw = root / "raw"
+            raw.mkdir()
+            (raw / "1.json").write_text(json.dumps({"assignees": [None], "timeline": []}), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "invalid assignee"):
+                module.adapt_raw_issues(raw, root / "adapted", {1})
+
     def test_rejects_incompatible_timeline(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

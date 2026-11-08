@@ -2,7 +2,8 @@
 
 This imports TriagerX from an external checkout; it does not copy or reimplement
 its scoring. Raw issue JSON is adapted into an isolated temporary directory by
-renaming only ``timeline`` to the ``timeline_data`` key expected by TriagerX.
+renaming ``timeline`` to ``timeline_data`` and wrapping assignee logins in the
+objects expected by TriagerX.
 """
 from __future__ import annotations
 
@@ -23,7 +24,7 @@ DEFAULT_TRIAGERX = Path("/Users/sebastian/Documents/Python/triagerX")
 
 
 def adapt_raw_issues(raw_dir: Path, output_dir: Path, issue_ids: set[int]) -> tuple[int, int]:
-    """Copy requested raw issues and expose timeline under TriagerX's expected key."""
+    """Adapt timeline and assignee formats without modifying the raw issues."""
     output_dir.mkdir(parents=True, exist_ok=True)
     copied = 0
     for issue_id in sorted(issue_ids):
@@ -41,7 +42,16 @@ def adapt_raw_issues(raw_dir: Path, output_dir: Path, issue_ids: set[int]) -> tu
         timeline = issue.get("timeline")
         if not isinstance(timeline, list) or any(not isinstance(event, dict) for event in timeline):
             raise ValueError(f"Issue {issue_id} must have a timeline list of event objects")
+        assignees = []
+        for assignee in issue["assignees"]:
+            if isinstance(assignee, str) and assignee.strip():
+                assignees.append({"login": assignee})
+            elif isinstance(assignee, dict) and isinstance(assignee.get("login"), str) and assignee["login"].strip():
+                assignees.append(assignee)
+            else:
+                raise ValueError(f"Issue {issue_id} has an invalid assignee: {assignee!r}")
         adapted = dict(issue)
+        adapted["assignees"] = assignees
         del adapted["timeline"]
         adapted["timeline_data"] = timeline
         (output_dir / source.name).write_text(json.dumps(adapted), encoding="utf-8")
