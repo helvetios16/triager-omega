@@ -165,8 +165,9 @@ def run(args: argparse.Namespace) -> dict:
         embedding_path = issues_dir / "train_embeddings.npy"
         np.save(embedding_path, train_embeddings)
 
-        expected = set(train.owner.dropna().astype(str).str.lower())
-        dev_map = {dev: index for index, dev in enumerate(sorted(expected))}
+        developer_logins = sorted(set(train.owner.dropna().astype(str).str.lower()))
+        expected = set(developer_logins)
+        dev_map = {dev: index for index, dev in enumerate(developer_logins)}
         component_map = {"unknown": 0}
         dummy = nn.Identity()
         evaluator = triager_class(
@@ -188,6 +189,8 @@ def run(args: argparse.Namespace) -> dict:
             train_checkpoint_date=datetime(1970, 1, 1),
         )
         ranks = []
+        ordered_contributors = []
+        nis_rows = []
         temporal_stats = {"excluded_no_valid_date": 0, "excluded_future_or_equal": 0}
         excluded_current_assignees = 0
         train_timestamps = pd.to_datetime(train.issue_number.map(meta), utc=True, errors="coerce")
@@ -216,9 +219,20 @@ def run(args: argparse.Namespace) -> dict:
             else:
                 similar = evaluator._get_top_k_similar_issues(str(row.text), args.top_k, args.threshold)
             contributors = evaluator._get_historical_contributors(similar)
-            ordered = [dev for dev, _score in contributors]
+            ordered = [str(dev).lower() for dev, _score in contributors]
             owner = str(row.owner).lower()
             ranks.append(next((rank for rank, dev in enumerate(ordered) if dev == owner), len(ordered)))
+            ordered_contributors.append(ordered)
+            # Preserve TriagerX list order for ranking/tie behavior; align the
+            # export matrix independently to deterministic, normalized login columns.
+            raw_scores = {str(dev).lower(): float(score) for dev, score in contributors}
+            row_scores = np.asarray([raw_scores.get(dev, 0.0) for dev in developer_logins], dtype=float)
+            if row_scores.size and np.max(row_scores) != np.min(row_scores):
+                nis_row = np.asarray(evaluator._normalize(row_scores), dtype=float)
+            else:
+                # Original _normalize divides by zero for a constant vector.
+                nis_row = np.zeros_like(row_scores)
+            nis_rows.append(nis_row)
 
     rank_array = np.asarray(ranks)
     metrics = {f"hit@{k}": float(np.mean(rank_array < k)) for k in (1, 3, 5, 10)}
@@ -230,8 +244,9 @@ def run(args: argparse.Namespace) -> dict:
         "parameters": {"top_k": args.top_k, "threshold": args.threshold, "decay": args.decay,
                        "contribution": args.contribution, "assignment": args.assignment,
                        "discussion": args.discussion, "model": args.model},
-        "data": {"train_csv": str(train_path), "test_csv": str(test_path), "meta": str(meta_path),
-                 "raw_dir": str(raw_dir), "triagerx_source": str(Path(args.triagerx_source).resolve())},
+        "data": {"train_csv": str(train_path.resolve()), "test_csv": str(test_path.resolve()),
+                 "meta": str(meta_path.resolve()), "raw_dir": str(raw_dir.resolve()),
+                 "triagerx_source": str(Path(args.triagerx_source).resolve())},
         "temporal_policy": policy,
         "temporal_exclusions": {**temporal_stats, "current_assignee_lists_excluded_for_neighbor_issues": excluded_current_assignees},
         "temporal_note": (
@@ -245,12 +260,44 @@ def run(args: argparse.Namespace) -> dict:
         ),
     }
     text = json.dumps(result, indent=2)
+    if args.output and getattr(args, "scores_output", None):
+        if Path(args.output).resolve() == Path(args.scores_output).resolve():
+            raise ValueError("aggregate result and per-query scores must use distinct output paths")
     if args.output:
         output = Path(args.output)
         if output.exists():
             raise FileExistsError(f"Refusing to overwrite result: {output}")
         output.parent.mkdir(parents=True, exist_ok=True)
         output.write_text(text + "\n", encoding="utf-8")
+    if getattr(args, "scores_output", None):
+        score_path = Path(args.scores_output)
+        if score_path.exists():
+            raise FileExistsError(f"Refusing to overwrite per-query scores: {score_path}")
+        labels = developer_logins
+        score_matrix = np.asarray(nis_rows, dtype=float)
+        if score_matrix.shape != (len(test), len(labels)):
+            raise ValueError(f"NIS alignment failure: {score_matrix.shape} != {(len(test), len(labels))}")
+        # Check that independently retained original ranking reproduces all reported hits.
+        exported_ranks = [next((i for i, dev in enumerate(row) if dev == str(owner).lower()), len(row))
+                          for row, owner in zip(ordered_contributors, test.owner)]
+        for k in (1, 3, 5, 10):
+            if float(np.mean(np.asarray(exported_ranks) < k)) != metrics[f"hit@{k}"]:
+                raise ValueError(f"Exported ranking does not reproduce hit@{k}")
+        score_payload = {
+            "schema": "triagerx-original-ibr-nis-v1",
+            "issue_ids": [int(value) for value in test.issue_number],
+            "developer_logins": labels,
+            "scores_nis": score_matrix.tolist(),
+            "original_ordered_contributors": ordered_contributors,
+            "owners": [str(value).lower() for value in test.owner],
+            "metrics": metrics,
+            "temporal_policy": policy,
+            "parameters": result["parameters"],
+            "data": result["data"],
+            "score_note": "Columns align with developer_logins. Per-row min-max uses TriagerX _normalize; constant rows are all zero. Ranking/ties retain _get_historical_contributors order, not column order.",
+        }
+        score_path.parent.mkdir(parents=True, exist_ok=True)
+        score_path.write_text(json.dumps(score_payload, indent=2) + "\n", encoding="utf-8")
     print(text)
     return result
 
@@ -272,6 +319,7 @@ def main() -> None:
     parser.add_argument("--temporal-policy", choices=("strict", "original"), default="strict",
                         help="strict excludes unverifiable/future neighbor evidence; original reproduces prior behavior")
     parser.add_argument("--output", help="optional new result JSON path; existing paths are never overwritten")
+    parser.add_argument("--scores-output", help="optional per-query original TriagerX NIS JSON export; never overwrites")
     run(parser.parse_args())
 
 

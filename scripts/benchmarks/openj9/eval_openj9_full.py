@@ -41,6 +41,7 @@ class EvaluationConfig:
     cbr_model: str = "sentence-transformers/all-mpnet-base-v2"
     cbr_topk: int = 50
     cbr_tau: float = 2.0
+    cbr_vote: str = "idf"
     cbr_maxlen: int = 384
     cbr_name: str = "cbr_model"
     train_csv: str | None = None
@@ -74,6 +75,7 @@ def evaluate(
     test_df: pd.DataFrame | None = None, train_embeddings: np.ndarray | None = None,
     test_embeddings: np.ndarray | None = None, nis: np.ndarray | None = None,
     interactions_df: pd.DataFrame | None = None, meta_df: pd.DataFrame | None = None,
+    fusion_weights: list[float] | None = None,
 ) -> dict[str, Any]:
     """Calcula NPS/NIS y la curva de fusión, devolviendo matrices y métricas.
 
@@ -94,7 +96,7 @@ def evaluate(
     if config.cbr_mode == "retrieval":
         retriever = CbrRetriever(CbrConfig(encoder_name=config.cbr_model, device=device,
             max_seq_length=config.cbr_maxlen, top_k=config.cbr_topk, tau=config.cbr_tau,
-            vote_strategy="idf"))
+            vote_strategy=config.cbr_vote))
         retriever.fit(train["text"].tolist(), train["owner"].tolist(), test["owner"].tolist(),
                       precomputed_embeddings=train_embeddings)
         nps = normalize_rows(retriever.score(test["text"].tolist(), test_embeddings=test_embeddings), how="minmax")
@@ -160,7 +162,10 @@ def evaluate(
         else: raise ValueError("ibr_channel debe ser 'semantic' o 'lexical'")
     if np.asarray(nis).shape != (len(test), num_classes):
         raise ValueError(f"nis debe tener forma {(len(test), num_classes)}")
-    wfs = [round(x, 1) for x in np.arange(0.1, 1.0001, 0.1)]
+    wfs = ([float(weight) for weight in fusion_weights] if fusion_weights is not None
+           else [round(x, 1) for x in np.arange(0.1, 1.0001, 0.1)])
+    if not wfs or any(not np.isfinite(weight) or weight < 0 for weight in wfs):
+        raise ValueError("fusion_weights must be a nonempty list of finite nonnegative weights")
     curves = []
     if config.gate_sweep:
         for gate in [None, *[i / 10 for i in range(1, 10)]]:
@@ -211,6 +216,7 @@ def main() -> None:
     p.add_argument("--cbr-model", default=CONFIG.cbr_model)
     p.add_argument("--cbr-topk", type=int, default=CONFIG.cbr_topk)
     p.add_argument("--cbr-tau", type=float, default=CONFIG.cbr_tau)
+    p.add_argument("--cbr-vote", choices=["sum", "mean", "max", "idf", "rank"], default=CONFIG.cbr_vote)
     p.add_argument("--cbr-maxlen", type=int, default=CONFIG.cbr_maxlen)
     p.add_argument("--cbr-name", default=CONFIG.cbr_name)
     p.add_argument("--train-csv", default=CONFIG.train_csv)

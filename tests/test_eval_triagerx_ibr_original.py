@@ -116,18 +116,19 @@ class EvaluationTests(unittest.TestCase):
         )
 
     def _fixtures(self, root):
-        train = pd.DataFrame({"issue_number": [1, 2], "owner": ["dev-a", "dev-b"], "text": ["one", "two"]})
+        train = pd.DataFrame({"issue_number": [1, 2, 4], "owner": ["dev-a", "dev-b", "dev-c"], "text": ["one", "two", "four"]})
         test = pd.DataFrame({"issue_number": [3], "owner": ["dev-b"], "text": ["query"]})
         train_path, test_path = root / "train.csv", root / "test.csv"
         train.to_csv(train_path, index=False)
         test.to_csv(test_path, index=False)
         meta_path = root / "meta.parquet"
-        pd.DataFrame({"issue_number": [1, 2, 3], "created_at": [
-            "2021-02-01T00:00:00Z", "2021-02-03T10:00:00Z", "2021-02-03T10:00:00Z"
+        pd.DataFrame({"issue_number": [1, 2, 3, 4], "created_at": [
+            "2021-02-01T00:00:00Z", "2021-02-03T10:00:00Z", "2021-02-03T10:00:00Z",
+            "2021-02-02T00:00:00Z"
         ]}).to_parquet(meta_path)
         raw_dir = root / "raw"
         raw_dir.mkdir()
-        for issue_id in (1, 2):
+        for issue_id in (1, 2, 4):
             (raw_dir / f"{issue_id}.json").write_text(
                 json.dumps({"assignees": [], "timeline": []}), encoding="utf-8"
             )
@@ -142,7 +143,7 @@ class EvaluationTests(unittest.TestCase):
                 def __init__(self, **kwargs):
                     self.assert_train = kwargs["train_data"].issue_number.tolist()
                     self._train_data = kwargs["train_data"]
-                    self._all_embeddings = np.asarray([[1.0, 0.0], [0.0, 1.0]])
+                    self._all_embeddings = np.asarray([[1.0, 0.0], [0.0, 1.0], [0.5, 0.5]])
                     self.initial_checkpoint = kwargs["train_checkpoint_date"]
                     self.checkpoints = []
 
@@ -153,7 +154,10 @@ class EvaluationTests(unittest.TestCase):
 
                 def _get_historical_contributors(self, similar):
                     self.assert_similar = similar
-                    return [("dev-b", 1.0), ("dev-a", 0.5)]
+                    return [("dev-b", 0.75), ("dev-c", 0.5), ("dev-a", 0.25)]
+
+                def _normalize(self, scores):
+                    return (scores - np.min(scores)) / (np.max(scores) - np.min(scores))
 
             def factory(**kwargs):
                 instance = FakeIBR(**kwargs)
@@ -166,29 +170,37 @@ class EvaluationTests(unittest.TestCase):
 
                 def encode(self, texts, **kwargs):
                     self.assert_texts = list(texts)
-                    return [[1.0, 0.0], [0.0, 1.0]]
+                    return [[1.0, 0.0], [0.0, 1.0], [0.5, 0.5]]
 
             args = Namespace(
                 train_csv=train_path, test_csv=test_path, meta=meta_path, raw_dir=raw_dir,
                 triagerx_source="external.py", model="offline-model", top_k=15, threshold=0.6,
                 decay=0.01, contribution=1.5, assignment=0.5, discussion=0.1, output=None,
-                temporal_policy="strict",
+                temporal_policy="strict", scores_output=Path(directory) / "nis.json",
             )
             with patch.object(module, "_load_triagerx", return_value=factory), patch(
                 "sentence_transformers.SentenceTransformer", FakeSentenceTransformer
             ), redirect_stdout(io.StringIO()):
                 result = module.run(args)
 
-            self.assertEqual(instances[0].assert_train, [1, 2])
+            self.assertEqual(instances[0].assert_train, [1, 2, 4])
             self.assertEqual(instances[0].initial_checkpoint, datetime(1970, 1, 1))
             self.assertEqual(instances[0].checkpoints, [datetime(2021, 2, 3)])
-            self.assertEqual(instances[0].eligible_train_ids, [1])
-            self.assertEqual(instances[0].assert_similar, [(0, 0.9)])
+            self.assertEqual(instances[0].eligible_train_ids, [1, 4])
+            self.assertEqual(instances[0].assert_similar, [(0, 0.9), (1, 0.8)])
             self.assertEqual(result["metrics"]["hit@1"], 1.0)
             self.assertEqual(result["metrics"]["hit@3"], 1.0)
             self.assertEqual(result["metrics"]["coverage_raw_train"], 1.0)
             self.assertEqual(result["temporal_policy"], "strict")
             self.assertIn("strictly before", result["temporal_note"])
+            exported = json.loads((Path(directory) / "nis.json").read_text(encoding="utf-8"))
+            self.assertEqual(exported["issue_ids"], [3])
+            self.assertEqual(exported["developer_logins"], ["dev-a", "dev-b", "dev-c"])
+            self.assertEqual(exported["original_ordered_contributors"], [["dev-b", "dev-c", "dev-a"]])
+            np.testing.assert_allclose(exported["scores_nis"], [[0.0, 1.0, 0.5]])
+            self.assertEqual(dict(zip(exported["developer_logins"], exported["scores_nis"][0])),
+                             {"dev-a": 0.0, "dev-b": 1.0, "dev-c": 0.5})
+            self.assertEqual(exported["metrics"], result["metrics"])
 
     def test_invalid_query_date_fails_before_loading_encoder(self):
         with tempfile.TemporaryDirectory() as directory:

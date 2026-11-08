@@ -1,6 +1,8 @@
 import importlib.util
 import sys
+import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import numpy as np
 import pandas as pd
@@ -28,6 +30,7 @@ def test_config_defaults_and_default_retrieval_offline():
     nis = np.array([[1., 0.], [0., 1.]], dtype=np.float32)
     cfg = full.EvaluationConfig(cpu=True)
     assert cfg.cbr_mode == "retrieval"
+    assert cfg.cbr_vote == "idf"
     assert (cfg.cbr_topk, cfg.cbr_tau, cfg.cbr_maxlen) == (50, 2.0, 384)
     assert (cfg.top_k, cfg.tau, cfg.lam, cfg.ip_c, cfg.ip_a, cfg.ip_d) == (15, .6, .01, 1.5, .5, .1)
     result = full.evaluate(cfg, train_df=train, test_df=test, train_embeddings=tr,
@@ -40,6 +43,28 @@ def test_config_defaults_and_default_retrieval_offline():
     np.testing.assert_allclose(result["nps"], expected)
     assert result["label_encoder"] == {"a": 0, "b": 1}
     assert len(result["curves"]) == 10
+
+
+class CbrVoteConfigTests(unittest.TestCase):
+    def test_vote_is_configurable_without_changing_default(self):
+        train, test = _frames()
+        captured = {}
+
+        class Retriever:
+            def __init__(self, config):
+                captured["vote"] = config.vote_strategy
+                self.label_encoder = {"a": 0, "b": 1}
+            def fit(self, *args, **kwargs): pass
+            def score(self, *args, **kwargs): return np.array([[1., 0.], [0., 1.]])
+
+        with patch.object(full, "CbrRetriever", Retriever):
+            result = full.evaluate(full.EvaluationConfig(cpu=True, cbr_vote="sum"), train_df=train, test_df=test,
+                                   nis=np.zeros((2, 2)))
+            self.assertEqual(captured["vote"], "sum")
+            self.assertEqual(len(result["curves"]), 10)
+            one = full.evaluate(full.EvaluationConfig(cpu=True, cbr_vote="sum"), train_df=train, test_df=test,
+                                nis=np.zeros((2, 2)), fusion_weights=[.4])
+            self.assertEqual([row["weight"] for row in one["curves"]], [.4])
 
 
 def test_fusion_matches_fixed_legacy_linear_rrf_gate_and_sweep():
