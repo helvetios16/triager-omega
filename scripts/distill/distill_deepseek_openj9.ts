@@ -36,9 +36,7 @@ const PRICE_CACHE_HIT_PER_1M = 0.006;  // Peak: $0.006 / Off-peak: $0.003
 const PRICE_CACHE_MISS_PER_1M = 0.30;  // Peak: $0.30 / Off-peak: $0.15
 const PRICE_OUTPUT_PER_1M = 1.20;      // Peak: $1.20 / Off-peak: $0.60
 
-// ============================================================================
 // PROMPT ESPECIALIZADO EN OPENJ9 / JVM RUNTIME (Análogo al de TypeScript)
-// ============================================================================
 const SYSTEM_PROMPT = `You are an expert Java Virtual Machine (JVM) and runtime systems engineer who reads Eclipse OpenJ9 issue reports and extracts structured technical information for developer triage.
 
 Return ONLY a raw JSON object — no markdown, no code blocks, no extra text.

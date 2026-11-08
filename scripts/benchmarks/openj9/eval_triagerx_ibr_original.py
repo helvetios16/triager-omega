@@ -23,8 +23,10 @@ DEFAULT_PROJECT = Path(__file__).resolve().parents[3]
 DEFAULT_TRIAGERX = Path("/Users/sebastian/Documents/Python/triagerX")
 
 
-def adapt_raw_issues(raw_dir: Path, output_dir: Path, issue_ids: set[int]) -> tuple[int, int]:
-    """Adapt timeline and assignee formats without modifying the raw issues."""
+def adapt_raw_issues(
+    raw_dir: Path, output_dir: Path, issue_ids: set[int], *, cutoff=None, stats: dict | None = None
+) -> tuple[int, int]:
+    """Adapt raw issues; optionally retain only verifiably pre-query timeline events."""
     output_dir.mkdir(parents=True, exist_ok=True)
     copied = 0
     for issue_id in sorted(issue_ids):
@@ -43,13 +45,25 @@ def adapt_raw_issues(raw_dir: Path, output_dir: Path, issue_ids: set[int]) -> tu
         if not isinstance(timeline, list) or any(not isinstance(event, dict) for event in timeline):
             raise ValueError(f"Issue {issue_id} must have a timeline list of event objects")
         assignees = []
-        for assignee in issue["assignees"]:
+        for assignee in issue["assignees"] if cutoff is None else []:
             if isinstance(assignee, str) and assignee.strip():
                 assignees.append({"login": assignee})
             elif isinstance(assignee, dict) and isinstance(assignee.get("login"), str) and assignee["login"].strip():
                 assignees.append(assignee)
             else:
                 raise ValueError(f"Issue {issue_id} has an invalid assignee: {assignee!r}")
+        if cutoff is not None:
+            retained = []
+            for event in timeline:
+                parsed = pd.to_datetime(event.get("created_at"), utc=True, errors="coerce")
+                if pd.isna(parsed):
+                    if stats is not None:
+                        stats["excluded_no_valid_date"] = stats.get("excluded_no_valid_date", 0) + 1
+                elif parsed < cutoff:
+                    retained.append(event)
+                elif stats is not None:
+                    stats["excluded_future_or_equal"] = stats.get("excluded_future_or_equal", 0) + 1
+            timeline = retained
         adapted = dict(issue)
         adapted["assignees"] = assignees
         del adapted["timeline"]
@@ -74,6 +88,11 @@ def _load_triagerx(source: Path):
         sys.path.remove(str(repo_root))
         raise
     return TriagerX
+
+
+def _eligible_train_positions(train_timestamps: pd.Series, query_timestamp) -> np.ndarray:
+    """Return only train rows with a verified timestamp strictly before the query."""
+    return np.flatnonzero(np.asarray(train_timestamps < query_timestamp))
 
 
 def _date(value) -> datetime:
@@ -113,8 +132,10 @@ def run(args: argparse.Namespace) -> dict:
     missing_meta = sorted(query_ids - set(meta_by_query))
     invalid_dates = []
     checkpoint_dates = {}
+    query_timestamps = {}
     for issue_id in sorted(query_ids - set(missing_meta)):
         try:
+            query_timestamps[issue_id] = pd.to_datetime(meta_by_query[issue_id], utc=True, errors="raise")
             checkpoint_dates[issue_id] = _date(meta_by_query[issue_id])
         except ValueError:
             invalid_dates.append(issue_id)
@@ -125,6 +146,9 @@ def run(args: argparse.Namespace) -> dict:
     if invalid_dates:
         raise ValueError(f"Query metadata has missing/invalid created_at dates ({len(invalid_dates)}); examples: {invalid_dates[:10]}")
 
+    policy = getattr(args, "temporal_policy", "strict")
+    if policy not in {"strict", "original"}:
+        raise ValueError(f"Unknown temporal policy: {policy}")
     triager_class = _load_triagerx(Path(args.triagerx_source))
     with tempfile.TemporaryDirectory(prefix="triagerx-ibr-adapted-") as temporary:
         issues_dir = Path(temporary)
@@ -164,12 +188,33 @@ def run(args: argparse.Namespace) -> dict:
             train_checkpoint_date=datetime(1970, 1, 1),
         )
         ranks = []
+        temporal_stats = {"excluded_no_valid_date": 0, "excluded_future_or_equal": 0}
+        excluded_current_assignees = 0
+        train_timestamps = pd.to_datetime(train.issue_number.map(meta), utc=True, errors="coerce")
+        unknown_train_dates = int(train_timestamps.isna().sum())
+        temporal_stats["train_issues_without_valid_date"] = unknown_train_dates
+        original_train_data = evaluator._train_data
+        original_embeddings = evaluator._all_embeddings
         for row in test.itertuples(index=False):
             issue_id = int(row.issue_number)
             if issue_id not in meta.index:
                 raise ValueError(f"No meta created_at for query issue {issue_id}")
             evaluator._train_checkpoint_date = checkpoint_dates[issue_id]
-            similar = evaluator._get_top_k_similar_issues(str(row.text), args.top_k, args.threshold)
+            if policy == "strict":
+                eligible_positions = _eligible_train_positions(train_timestamps, query_timestamps[issue_id])
+                evaluator._train_data = original_train_data.iloc[eligible_positions].reset_index(drop=True)
+                evaluator._all_embeddings = original_embeddings[eligible_positions]
+                similar = evaluator._get_top_k_similar_issues(
+                    str(row.text), min(args.top_k, len(eligible_positions)), args.threshold
+                ) if len(eligible_positions) else []
+                query_dir = issues_dir / f"query-{issue_id}"
+                neighbor_ids = {int(evaluator._train_data.iloc[int(index)].issue_number) for index, _score in similar}
+                adapt_raw_issues(raw_dir, query_dir, neighbor_ids, cutoff=query_timestamps[issue_id], stats=temporal_stats)
+                excluded_current_assignees += len(neighbor_ids)
+                evaluator._issues_path = str(query_dir)
+                evaluator._all_issues = [f"{neighbor_id}.json" for neighbor_id in neighbor_ids]
+            else:
+                similar = evaluator._get_top_k_similar_issues(str(row.text), args.top_k, args.threshold)
             contributors = evaluator._get_historical_contributors(similar)
             ordered = [dev for dev, _score in contributors]
             owner = str(row.owner).lower()
@@ -187,7 +232,17 @@ def run(args: argparse.Namespace) -> dict:
                        "discussion": args.discussion, "model": args.model},
         "data": {"train_csv": str(train_path), "test_csv": str(test_path), "meta": str(meta_path),
                  "raw_dir": str(raw_dir), "triagerx_source": str(Path(args.triagerx_source).resolve())},
-        "temporal_note": "TriagerX original scoring retained. Each query checkpoint is created_at truncated to day; complete timeline events are retained, including events later than the query, so future-event leakage is possible.",
+        "temporal_policy": policy,
+        "temporal_exclusions": {**temporal_stats, "current_assignee_lists_excluded_for_neighbor_issues": excluded_current_assignees},
+        "temporal_note": (
+            "TriagerX scoring retained. Query checkpoints remain truncated to day as in the original grid. "
+            "Strict mode filters neighbor timeline events to valid UTC created_at strictly before the full query timestamp; "
+            "all current assignee lists are excluded because historical assignment times are unavailable. TriagerX infers "
+            "last_assignment heuristically from retained PR/commit events; this is not observed assignment history."
+            if policy == "strict" else
+            "Original behavior retained: checkpoints are created_at truncated to day and full timelines/current assignees "
+            "are used, so future-event leakage is possible."
+        ),
     }
     text = json.dumps(result, indent=2)
     if args.output:
@@ -214,6 +269,8 @@ def main() -> None:
     parser.add_argument("--contribution", type=float, default=1.5)
     parser.add_argument("--assignment", type=float, default=0.5)
     parser.add_argument("--discussion", type=float, default=0.1)
+    parser.add_argument("--temporal-policy", choices=("strict", "original"), default="strict",
+                        help="strict excludes unverifiable/future neighbor evidence; original reproduces prior behavior")
     parser.add_argument("--output", help="optional new result JSON path; existing paths are never overwritten")
     run(parser.parse_args())
 

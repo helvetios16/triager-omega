@@ -25,9 +25,7 @@ from triager_omega.data import loader
 _URL_RE = re.compile(r"https?://\S+")
 
 
-# --------------------------------------------------------------------------- #
 # Identidad
-# --------------------------------------------------------------------------- #
 def normalize_identity(
     bugs: pd.DataFrame, email_to_id: pd.Series, cfg: Settings = settings
 ) -> pd.DataFrame:
@@ -47,9 +45,7 @@ def normalize_identity(
     return out
 
 
-# --------------------------------------------------------------------------- #
 # Directorio activo de candidatos
-# --------------------------------------------------------------------------- #
 def build_active_directory(
     contributors: pd.DataFrame, cfg: Settings = settings, reference_time: pd.Timestamp | None = None
 ) -> set[int]:
@@ -72,9 +68,7 @@ def build_active_directory(
     return active
 
 
-# --------------------------------------------------------------------------- #
 # Filtrado de bugs
-# --------------------------------------------------------------------------- #
 def filter_bugs(
     bugs: pd.DataFrame, active_ids: set[int], cfg: Settings = settings
 ) -> pd.DataFrame:
@@ -101,9 +95,7 @@ def filter_bugs(
     return out
 
 
-# --------------------------------------------------------------------------- #
 # Split temporal
-# --------------------------------------------------------------------------- #
 def temporal_split(bugs: pd.DataFrame, cfg: Settings = settings) -> pd.DataFrame:
     """Ordena por ``Creation Time`` y asigna split train/val/test cronológico.
 
@@ -132,9 +124,7 @@ def temporal_split(bugs: pd.DataFrame, cfg: Settings = settings) -> pd.DataFrame
     return out
 
 
-# --------------------------------------------------------------------------- #
 # Pesos de muestreo (balanceo de cola larga)
-# --------------------------------------------------------------------------- #
 def compute_sample_weights(train: pd.DataFrame) -> np.ndarray:
     """w(b) = 1 / freq_train(dev). Devuelve un array alineado a las filas de `train`."""
     freq = train["contributor_id"].value_counts()
@@ -142,9 +132,7 @@ def compute_sample_weights(train: pd.DataFrame) -> np.ndarray:
     return weights
 
 
-# --------------------------------------------------------------------------- #
 # Codificador de etiquetas
-# --------------------------------------------------------------------------- #
 def build_label_encoder(train: pd.DataFrame) -> dict[str, int]:
     """Mapeo ``Contributor Id (str) -> class_idx`` sobre los devs presentes en train.
 
@@ -154,9 +142,7 @@ def build_label_encoder(train: pd.DataFrame) -> dict[str, int]:
     return {str(dev): idx for idx, dev in enumerate(devs)}
 
 
-# --------------------------------------------------------------------------- #
 # Limpieza de texto (mínima; reutilizable por módulos posteriores)
-# --------------------------------------------------------------------------- #
 def clean_text(text: str | None, cfg: Settings = settings) -> str:
     """Normaliza URLs y trunca stacktraces largos. Conserva el contenido semántico."""
     if text is None or (isinstance(text, float) and np.isnan(text)):
@@ -169,9 +155,7 @@ def clean_text(text: str | None, cfg: Settings = settings) -> str:
     return "\n".join(lines).strip()
 
 
-# --------------------------------------------------------------------------- #
 # Orquestación
-# --------------------------------------------------------------------------- #
 def run(cfg: Settings = settings) -> dict:
     """Ejecuta el Módulo 1 completo y materializa los artefactos."""
     cfg.artifacts_dir.mkdir(parents=True, exist_ok=True)

@@ -60,6 +60,40 @@ class AdaptRawIssuesTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "invalid assignee"):
                 module.adapt_raw_issues(raw, root / "adapted", {1})
 
+    def test_strict_filter_keeps_only_valid_events_before_full_cutoff_and_excludes_assignees(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            raw = root / "raw"
+            raw.mkdir()
+            events = [
+                {"event": "commented", "created_at": "2021-02-03T09:59:59Z"},
+                {"event": "commented", "created_at": "2021-02-03T10:00:00Z"},
+                {"event": "commented", "created_at": "2021-02-04T00:00:00Z"},
+                {"event": "commented"},
+                {"event": "commented", "created_at": "not-a-date"},
+            ]
+            original = {"assignees": ["known-only-from-now"], "timeline": events}
+            (raw / "1.json").write_text(json.dumps(original), encoding="utf-8")
+            stats = {}
+            module.adapt_raw_issues(raw, root / "strict", {1}, cutoff=pd.Timestamp("2021-02-03T10:00:00Z"), stats=stats)
+            adapted = json.loads((root / "strict/1.json").read_text(encoding="utf-8"))
+            self.assertEqual(adapted["timeline_data"], events[:1])
+            self.assertEqual(adapted["assignees"], [])
+            self.assertEqual(stats, {"excluded_future_or_equal": 2, "excluded_no_valid_date": 2})
+            self.assertEqual(json.loads((raw / "1.json").read_text(encoding="utf-8")), original)
+
+    def test_original_adaptation_preserves_events_and_assignees(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            raw = root / "raw"
+            raw.mkdir()
+            event = {"created_at": "bad"}
+            (raw / "1.json").write_text(json.dumps({"assignees": ["dev"], "timeline": [event]}), encoding="utf-8")
+            module.adapt_raw_issues(raw, root / "original", {1})
+            adapted = json.loads((root / "original/1.json").read_text(encoding="utf-8"))
+            self.assertEqual(adapted["assignees"], [{"login": "dev"}])
+            self.assertEqual(adapted["timeline_data"], [event])
+
     def test_rejects_incompatible_timeline(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -71,6 +105,16 @@ class AdaptRawIssuesTests(unittest.TestCase):
 
 
 class EvaluationTests(unittest.TestCase):
+    def test_eligible_train_positions_excludes_equal_and_unknown_dates(self):
+        timestamps = pd.to_datetime([
+            "2021-02-03T09:59:59Z", "2021-02-03T10:00:00Z", None,
+            "2021-02-03T10:00:01Z",
+        ], utc=True)
+        self.assertEqual(
+            module._eligible_train_positions(timestamps, pd.Timestamp("2021-02-03T10:00:00Z")).tolist(),
+            [0],
+        )
+
     def _fixtures(self, root):
         train = pd.DataFrame({"issue_number": [1, 2], "owner": ["dev-a", "dev-b"], "text": ["one", "two"]})
         test = pd.DataFrame({"issue_number": [3], "owner": ["dev-b"], "text": ["query"]})
@@ -78,7 +122,9 @@ class EvaluationTests(unittest.TestCase):
         train.to_csv(train_path, index=False)
         test.to_csv(test_path, index=False)
         meta_path = root / "meta.parquet"
-        pd.DataFrame({"issue_number": [3], "created_at": ["2021-02-03T10:00:00Z"]}).to_parquet(meta_path)
+        pd.DataFrame({"issue_number": [1, 2, 3], "created_at": [
+            "2021-02-01T00:00:00Z", "2021-02-03T10:00:00Z", "2021-02-03T10:00:00Z"
+        ]}).to_parquet(meta_path)
         raw_dir = root / "raw"
         raw_dir.mkdir()
         for issue_id in (1, 2):
@@ -95,12 +141,15 @@ class EvaluationTests(unittest.TestCase):
             class FakeIBR:
                 def __init__(self, **kwargs):
                     self.assert_train = kwargs["train_data"].issue_number.tolist()
+                    self._train_data = kwargs["train_data"]
+                    self._all_embeddings = np.asarray([[1.0, 0.0], [0.0, 1.0]])
                     self.initial_checkpoint = kwargs["train_checkpoint_date"]
                     self.checkpoints = []
 
                 def _get_top_k_similar_issues(self, issue, k, threshold):
                     self.checkpoints.append(self._train_checkpoint_date)
-                    return [(1, 0.9), (0, 0.8)]
+                    self.eligible_train_ids = self._train_data.issue_number.tolist()
+                    return [(index, 0.9 - index * 0.1) for index in range(min(k, len(self._train_data)))]
 
                 def _get_historical_contributors(self, similar):
                     self.assert_similar = similar
@@ -123,6 +172,7 @@ class EvaluationTests(unittest.TestCase):
                 train_csv=train_path, test_csv=test_path, meta=meta_path, raw_dir=raw_dir,
                 triagerx_source="external.py", model="offline-model", top_k=15, threshold=0.6,
                 decay=0.01, contribution=1.5, assignment=0.5, discussion=0.1, output=None,
+                temporal_policy="strict",
             )
             with patch.object(module, "_load_triagerx", return_value=factory), patch(
                 "sentence_transformers.SentenceTransformer", FakeSentenceTransformer
@@ -132,11 +182,13 @@ class EvaluationTests(unittest.TestCase):
             self.assertEqual(instances[0].assert_train, [1, 2])
             self.assertEqual(instances[0].initial_checkpoint, datetime(1970, 1, 1))
             self.assertEqual(instances[0].checkpoints, [datetime(2021, 2, 3)])
-            self.assertEqual(instances[0].assert_similar, [(1, 0.9), (0, 0.8)])
+            self.assertEqual(instances[0].eligible_train_ids, [1])
+            self.assertEqual(instances[0].assert_similar, [(0, 0.9)])
             self.assertEqual(result["metrics"]["hit@1"], 1.0)
             self.assertEqual(result["metrics"]["hit@3"], 1.0)
             self.assertEqual(result["metrics"]["coverage_raw_train"], 1.0)
-            self.assertIn("future-event leakage", result["temporal_note"])
+            self.assertEqual(result["temporal_policy"], "strict")
+            self.assertIn("strictly before", result["temporal_note"])
 
     def test_invalid_query_date_fails_before_loading_encoder(self):
         with tempfile.TemporaryDirectory() as directory:
